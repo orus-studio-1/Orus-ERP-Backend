@@ -1,0 +1,19 @@
+import { Router } from 'express';
+import {
+  getQuotations, getQuotation, createQuotation, updateQuotation, deleteQuotation, convertQuotationToOrder,
+  getSalesOrders, getSalesOrder, createSalesOrder, updateSalesOrderStatus, deleteSalesOrder,
+} from '../controllers/sales.controller';
+import { authenticate } from '../middleware/auth';
+
+const router = Router();
+router.use(authenticate);
+
+router.route('/quotations').get(getQuotations).post(createQuotation);
+router.route('/quotations/:id').get(getQuotation).put(updateQuotation).delete(deleteQuotation);
+router.post('/quotations/:id/convert', convertQuotationToOrder);
+
+router.route('/orders').get(getSalesOrders).post(createSalesOrder);
+router.route('/orders/:id').get(getSalesOrder).delete(deleteSalesOrder);
+router.put('/orders/:id/status', updateSalesOrderStatus);
+
+export default router;
