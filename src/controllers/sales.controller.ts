@@ -82,6 +82,27 @@ export const updateQuotation = async (req: Request, res: Response) => {
   }
 };
 
+export const updateQuotationStatus = async (req : Request , res : Response)=>{
+  try{
+    const { id } = req.params;
+    const { status } = req.body;
+
+    const validStatuses = ['DRAFT', 'SENT', 'ACCEPTED', 'REJECTED', 'EXPIRED'];
+    if(!validStatuses.includes(status)){
+      return error(res , 'Invalid Quotation Status Value' , 400);  
+    }
+
+    const quotation = await prisma.quotation.update({
+      where: { id },
+      data: { status },
+      include: { customer: { select: { name: true } } }
+    });
+    return success(res , quotation , 'Quotation Status Updated Successfully');
+  }catch(err : any){
+    return handlePrismaError(res , err);
+  }
+};
+
 export const deleteQuotation = async (req: Request, res: Response) => {
   try {
     await prisma.quotation.delete({ where: { id: req.params.id } });
@@ -187,6 +208,84 @@ export const createSalesOrder = async (req: Request, res: Response) => {
     return handlePrismaError(res, err);
   }
 };
+
+//Update Sales Order
+export const updateSalesOrder = async (req : Request , res: Response)=>{
+  try{
+    const { id } = req.params;
+    const { items, notes, terms, currency, discount, deliveryDate } = req.body;
+
+    const existingOrder = await prisma.salesOrder.findUnique({
+      where: { id },
+    });
+    
+    if(!existingOrder) return error(res, 'Sales Order not found' , 404);
+    if(existingOrder.status !== 'DRAFT'){
+      return error(res,'Only draft sales orders can be updates' , 400);
+    }
+    
+    let calculatedSubtotal = 0;
+    let calculatedTaxAmount = 0;
+
+    const newItemsData = items.map((item : any) =>{
+      const quantity = item.quantity || 0;
+      const unitPrice = item.unitPrice || 0;
+      const discountPercent = item.discount || 0; // Item level discount percent
+      const taxRate = item.taxRate || 0;
+
+      // Basic calculation
+      const lineBase = quantity * unitPrice;
+      const discountAmount = (lineBase * discountPercent) / 100;
+      const lineAfterDiscount = lineBase - discountAmount;
+      const taxAmount = (lineAfterDiscount * taxRate) / 100;
+      const lineTotal = lineAfterDiscount + taxAmount;
+
+      calculatedSubtotal += lineAfterDiscount;
+      calculatedTaxAmount += taxAmount;
+
+      return {
+        productId: item.productId,
+        description: item.description,
+        quantity: quantity,
+        unitPrice: unitPrice,
+        taxRate: taxRate,
+        discount: discountPercent,
+        total: lineTotal, // Server verified total
+      };
+    });
+    const calculatedTotal = calculatedSubtotal + calculatedTaxAmount - (discount || 0);
+    const updatedOrder = await prisma.$transaction(async (tx) =>{
+      await tx.salesOrderItem.deleteMany({
+        where: { salesOrderId: id },
+      });
+
+      const order = await tx.salesOrder.update({
+        where: { id },
+        data: {
+          deliveryDate: deliveryDate ? new Date(deliveryDate) : undefined,
+          subtotal: calculatedSubtotal,
+          taxAmount: calculatedTaxAmount,
+          discount: discount || 0,
+          total: calculatedTotal,
+          currency: currency || 'USD',
+          notes,
+          terms,
+          // Naye items ko cascade create command bhej rahe hain
+          items: {
+            create: newItemsData,
+          },
+        },
+        include: { items: true },
+      });
+
+      return order;
+    });
+
+    return success(res, updatedOrder, 'Sales Order Updates Successfully');
+  }catch(err : any){
+    return handlePrismaError(res , err);
+  }
+}
 
 export const updateSalesOrderStatus = async (req: Request, res: Response) => {
   try {
