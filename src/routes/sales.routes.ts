@@ -2,6 +2,7 @@ import { Router } from 'express';
 import {
   getQuotations, getQuotation, createQuotation, updateQuotation, deleteQuotation, convertQuotationToOrder,
   getSalesOrders, getSalesOrder, createSalesOrder, updateSalesOrderStatus, deleteSalesOrder,
+  updateQuotationStatus,updateSalesOrder
 } from '../controllers/sales.controller';
 import { authenticate } from '../middleware/auth';
 
@@ -15,5 +16,8 @@ router.post('/quotations/:id/convert', convertQuotationToOrder);
 router.route('/orders').get(getSalesOrders).post(createSalesOrder);
 router.route('/orders/:id').get(getSalesOrder).delete(deleteSalesOrder);
 router.put('/orders/:id/status', updateSalesOrderStatus);
+
+router.put('/sales-orders/:id', updateSalesOrder);
+router.route('/quotations/:id/status').patch(updateQuotationStatus);
 
 export default router;
