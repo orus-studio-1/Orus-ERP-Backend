@@ -47,6 +47,40 @@ export const getProduct = async (req: Request, res: Response) => {
   }
 };
 
+export const searchProducts = async (req: Request, res: Response) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    if (!q) return success(res, []);
+    const products = await prisma.product.findMany({
+      where: {
+        isActive: true,
+        OR: [
+          { name: { contains: q, mode: 'insensitive' } },
+          { sku: { contains: q, mode: 'insensitive' } },
+        ],
+      },
+      select: {
+        id: true,
+        sku: true,
+        name: true,
+        salePrice: true,
+        taxRate: true,
+        unitId: true,
+        unit: { select: { id: true, name: true, symbol: true } },
+      },
+      orderBy: { name: 'asc' },
+      take: 20,
+    });
+    return success(res, products.map((p: any) => ({
+      ...p,
+      salePrice: Number(p.salePrice || 0),
+      taxRate: Number(p.taxRate || 0),
+    })));
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
 export const createProduct = async (req: Request, res: Response) => {
   try {
     const product = await prisma.product.create({
@@ -238,4 +272,3 @@ export const deleteUnit = async (req: Request, res: Response) => {
     return handlePrismaError(res, err);
   }
 };
-

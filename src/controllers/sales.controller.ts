@@ -1,8 +1,48 @@
 ﻿import { Request, Response } from 'express';
+import { Prisma } from '@prisma/client';
 import prisma from '../lib/prisma';
 import { success, paginated, error } from '../utils/response';
 import { handlePrismaError } from '../utils/prismaError';
 import { generateOrderNo, generateQuotationNo } from '../utils/generate';
+
+async function normalizeSalesItems(tx: any, items: any[] = []) {
+  const normalized = [];
+  let subtotal = new Prisma.Decimal(0);
+  let taxAmount = new Prisma.Decimal(0);
+
+  for (const item of items) {
+    const itemCode = String(item.itemCode || item.sku || '').trim();
+    let product = item.productId ? await tx.product.findUnique({ where: { id: item.productId } }) : null;
+    if (!product && itemCode) product = await tx.product.findFirst({ where: { sku: itemCode } });
+    if (!product) {
+      const sku = itemCode || `MISC-${Date.now()}-${normalized.length + 1}`;
+      product = await tx.product.create({
+        data: {
+          sku,
+          name: item.description || sku,
+          description: item.description,
+          type: 'SERVICE',
+          salePrice: new Prisma.Decimal(item.unitPrice ?? item.rate ?? 0),
+          taxRate: new Prisma.Decimal(item.taxRate || 0),
+          isActive: true,
+        },
+      });
+    }
+
+    const quantity = new Prisma.Decimal(item.quantity || 0);
+    const unitPrice = new Prisma.Decimal(item.unitPrice ?? item.rate ?? product.salePrice ?? 0);
+    const discount = new Prisma.Decimal(item.discount || 0);
+    const taxRate = new Prisma.Decimal(item.taxRate ?? product.taxRate ?? 0);
+    const net = quantity.mul(unitPrice).mul(new Prisma.Decimal(1).minus(discount.div(100)));
+    const lineTax = net.mul(taxRate.div(100));
+    const total = net.plus(lineTax);
+    subtotal = subtotal.plus(net);
+    taxAmount = taxAmount.plus(lineTax);
+    normalized.push({ productId: product.id, description: item.description || product.description || product.name, quantity, unitPrice, taxRate, discount, total });
+  }
+
+  return { items: normalized, subtotal, taxAmount };
+}
 
 // ---- QUOTATIONS ----
 export const getQuotations = async (req: Request, res: Response) => {
@@ -46,24 +86,36 @@ export const getQuotation = async (req: Request, res: Response) => {
 
 export const createQuotation = async (req: Request, res: Response) => {
   try {
-    const { customerId, date, validUntil, items, notes, terms, currency, discount } = req.body;
-    const quotationNo = await generateQuotationNo();
+    const { customerId, date, validUntil, items = [], notes, terms, currency, discount } = req.body;
+    if (!customerId) return error(res, 'customerId is required', 400);
+    if (!items.length) return error(res, 'At least one quotation item is required', 400);
 
-    const subtotal = items.reduce((s: number, i: any) => s + i.total, 0);
-    const taxAmount = items.reduce((s: number, i: any) => s + (i.total * (i.taxRate || 0) / 100), 0);
-    const total = subtotal + taxAmount - (discount || 0);
-
-    const quotation = await prisma.quotation.create({
-      data: {
-        quotationNo, customerId, date: new Date(date),
-        validUntil: validUntil ? new Date(validUntil) : undefined,
-        subtotal, taxAmount, total, discount: discount || 0, currency: currency || 'USD', notes, terms,
-        items: { create: items },
-      },
-      include: { customer: true, items: { include: { product: true } } },
+    const quotation = await prisma.$transaction(async (tx) => {
+      const quotationNo = await generateQuotationNo();
+      const calculated = await normalizeSalesItems(tx, items);
+      const discountAmount = new Prisma.Decimal(discount || 0);
+      const total = calculated.subtotal.plus(calculated.taxAmount).minus(discountAmount);
+      return tx.quotation.create({
+        data: {
+          quotationNo,
+          customerId,
+          date: date ? new Date(date) : new Date(),
+          validUntil: validUntil ? new Date(validUntil) : undefined,
+          subtotal: calculated.subtotal,
+          taxAmount: calculated.taxAmount,
+          total,
+          discount: discountAmount,
+          currency: currency || 'USD',
+          notes,
+          terms,
+          items: { create: calculated.items },
+        },
+        include: { customer: true, items: { include: { product: true } } },
+      });
     });
     return success(res, quotation, 'Quotation created', 201);
   } catch (err: any) {
+    if (!err.code && err.message) return error(res, err.message, 400);
     return handlePrismaError(res, err);
   }
 };
@@ -187,24 +239,36 @@ export const getSalesOrder = async (req: Request, res: Response) => {
 
 export const createSalesOrder = async (req: Request, res: Response) => {
   try {
-    const { customerId, date, deliveryDate, items, notes, terms, currency, discount } = req.body;
-    const orderNo = await generateOrderNo();
+    const { customerId, date, deliveryDate, items = [], notes, terms, currency, discount } = req.body;
+    if (!customerId) return error(res, 'customerId is required', 400);
+    if (!items.length) return error(res, 'At least one sales order item is required', 400);
 
-    const subtotal = items.reduce((s: number, i: any) => s + i.total, 0);
-    const taxAmount = items.reduce((s: number, i: any) => s + (i.total * (i.taxRate || 0) / 100), 0);
-    const total = subtotal + taxAmount - (discount || 0);
-
-    const order = await prisma.salesOrder.create({
-      data: {
-        orderNo, customerId, date: new Date(date),
-        deliveryDate: deliveryDate ? new Date(deliveryDate) : undefined,
-        subtotal, taxAmount, total, discount: discount || 0, currency: currency || 'USD', notes, terms,
-        items: { create: items },
-      },
-      include: { customer: true, items: { include: { product: true } } },
+    const order = await prisma.$transaction(async (tx) => {
+      const orderNo = await generateOrderNo();
+      const calculated = await normalizeSalesItems(tx, items);
+      const discountAmount = new Prisma.Decimal(discount || 0);
+      const total = calculated.subtotal.plus(calculated.taxAmount).minus(discountAmount);
+      return tx.salesOrder.create({
+        data: {
+          orderNo,
+          customerId,
+          date: date ? new Date(date) : new Date(),
+          deliveryDate: deliveryDate ? new Date(deliveryDate) : undefined,
+          subtotal: calculated.subtotal,
+          taxAmount: calculated.taxAmount,
+          total,
+          discount: discountAmount,
+          currency: currency || 'USD',
+          notes,
+          terms,
+          items: { create: calculated.items },
+        },
+        include: { customer: true, items: { include: { product: true } } },
+      });
     });
     return success(res, order, 'Sales order created', 201);
   } catch (err: any) {
+    if (!err.code && err.message) return error(res, err.message, 400);
     return handlePrismaError(res, err);
   }
 };
@@ -311,4 +375,3 @@ export const deleteSalesOrder = async (req: Request, res: Response) => {
     return handlePrismaError(res, err);
   }
 };
-

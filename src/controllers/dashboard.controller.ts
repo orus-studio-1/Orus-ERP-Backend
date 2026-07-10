@@ -2,6 +2,7 @@
 import prisma from '../lib/prisma';
 import { success, error } from '../utils/response';
 import { handlePrismaError } from '../utils/prismaError';
+import { serializeInvoice, serializeMoney } from '../utils/invoice';
 
 export const getDashboardStats = async (req: Request, res: Response) => {
   try {
@@ -23,7 +24,7 @@ export const getDashboardStats = async (req: Request, res: Response) => {
       monthlyRevenue,
     ] = await Promise.all([
       prisma.salesInvoice.aggregate({
-        where: { status: 'PAID' },
+        where: { status: 'SUBMITTED', paymentStatus: 'PAID' },
         _sum: { total: true },
       }),
       prisma.purchaseInvoice.aggregate({
@@ -31,7 +32,7 @@ export const getDashboardStats = async (req: Request, res: Response) => {
         _sum: { total: true },
       }),
       prisma.salesInvoice.aggregate({
-        where: { status: { in: ['SENT', 'PARTIAL', 'OVERDUE'] } },
+        where: { status: 'SUBMITTED', paymentStatus: { in: ['UNPAID', 'PARTIAL', 'OVERDUE'] } },
         _sum: { total: true },
         _count: true,
       }),
@@ -59,28 +60,28 @@ export const getDashboardStats = async (req: Request, res: Response) => {
           DATE_TRUNC('month', "createdAt") as month,
           SUM(total) as revenue
         FROM "SalesInvoice"
-        WHERE status = 'PAID' AND "createdAt" >= ${startOfYear}
+        WHERE status = 'SUBMITTED' AND "paymentStatus" = 'PAID' AND "createdAt" >= ${startOfYear}
         GROUP BY DATE_TRUNC('month', "createdAt")
         ORDER BY month ASC
       `,
     ]);
 
     const lowStock = lowStockProducts.filter(p => {
-      const totalQty = p.stockLevels.reduce((sum, sl) => sum + sl.quantity, 0);
-      return totalQty <= p.minStockLevel;
+      const totalQty = p.stockLevels.reduce((sum, sl) => sum + Number(sl.quantity), 0);
+      return totalQty <= Number(p.minStockLevel);
     }).slice(0, 10);
 
     return success(res, {
       revenue: {
-        total: totalRevenue._sum.total || 0,
+        total: serializeMoney(totalRevenue._sum.total),
         thisMonth: 0,
       },
       expenses: {
-        total: totalExpenses._sum.total || 0,
+        total: Number(totalExpenses._sum.total || 0),
       },
       pendingInvoices: {
         count: pendingInvoicesData._count,
-        amount: pendingInvoicesData._sum.total || 0,
+        amount: serializeMoney(pendingInvoicesData._sum.total),
       },
       activeCustomers,
       activeEmployees,
@@ -90,10 +91,14 @@ export const getDashboardStats = async (req: Request, res: Response) => {
         id: p.id,
         sku: p.sku,
         name: p.name,
-        currentStock: p.stockLevels.reduce((sum, sl) => sum + sl.quantity, 0),
-        minStockLevel: p.minStockLevel,
+        currentStock: p.stockLevels.reduce((sum, sl) => sum + Number(sl.quantity), 0),
+        minStockLevel: Number(p.minStockLevel),
       })),
-      recentInvoices,
+      recentInvoices: recentInvoices.map((invoice: any) => {
+        const serialized = serializeInvoice(invoice);
+        if (serialized.status === 'SUBMITTED') serialized.status = serialized.paymentStatus === 'UNPAID' ? 'SENT' : serialized.paymentStatus;
+        return serialized;
+      }),
       recentLeads,
       monthlyRevenue,
     });
@@ -101,4 +106,3 @@ export const getDashboardStats = async (req: Request, res: Response) => {
     return handlePrismaError(res, err);
   }
 };
-

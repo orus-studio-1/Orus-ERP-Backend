@@ -8,24 +8,24 @@ datasource db {
 
 // ===================== AUTH =====================
 model User {
-  id            String    @id @default(cuid())
-  email         String    @unique
-  password      String
-  firstName     String
-  lastName      String
-  phone         String?
-  avatar        String?
-  role          UserRole  @default(EMPLOYEE)
-  isActive      Boolean   @default(true)
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  firstName String
+  lastName  String
+  phone     String?
+  avatar    String?
+  role      UserRole @default(EMPLOYEE)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   employee      Employee?
-  createdLeads  Lead[]    @relation("LeadCreatedBy")
-  assignedLeads Lead[]    @relation("LeadAssignedTo")
+  createdLeads  Lead[]         @relation("LeadCreatedBy")
+  assignedLeads Lead[]         @relation("LeadAssignedTo")
   activities    Activity[]
-  tasks         Task[]    @relation("TaskAssignee")
-  createdTasks  Task[]    @relation("TaskCreator")
+  tasks         Task[]         @relation("TaskAssignee")
+  createdTasks  Task[]         @relation("TaskCreator")
   comments      Comment[]
   notifications Notification[]
 }
@@ -72,13 +72,17 @@ model Account {
   children    Account[]   @relation("AccountHierarchy")
   description String?
   isActive    Boolean     @default(true)
-  balance     Float       @default(0)
+  balance     Decimal     @default(0) @db.Decimal(18, 6)
   currency    String      @default("USD")
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 
-  debitLines  JournalLine[] @relation("DebitAccount")
-  creditLines JournalLine[] @relation("CreditAccount")
+  debitLines        JournalLine[]        @relation("DebitAccount")
+  creditLines       JournalLine[]        @relation("CreditAccount")
+  taxTemplateLines  TaxTemplateLine[]
+  salesInvoiceTaxes SalesInvoiceTax[]
+  creditNoteTaxes   CreditNoteTax[]
+  ledgerEntries     GeneralLedgerEntry[]
 }
 
 enum AccountType {
@@ -98,7 +102,8 @@ model FiscalYear {
   isClosed  Boolean  @default(false)
   createdAt DateTime @default(now())
 
-  periods Period[]
+  periods         Period[]
+  numberingSeries NumberingSeries[]
 }
 
 model Period {
@@ -119,8 +124,8 @@ model JournalEntry {
   description String
   reference   String?
   status      EntryStatus @default(DRAFT)
-  totalDebit  Float       @default(0)
-  totalCredit Float       @default(0)
+  totalDebit  Decimal     @default(0) @db.Decimal(18, 6)
+  totalCredit Decimal     @default(0) @db.Decimal(18, 6)
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 
@@ -133,18 +138,122 @@ enum EntryStatus {
   CANCELLED
 }
 
+enum DocumentType {
+  QUOTATION
+  SALES_ORDER
+  DELIVERY_NOTE
+  SALES_INVOICE
+  PAYMENT_ENTRY
+  CREDIT_NOTE
+  PURCHASE_ORDER
+  PURCHASE_INVOICE
+}
+
+enum DocumentStatus {
+  DRAFT
+  SUBMITTED
+  CANCELLED
+}
+
+enum InvoicePaymentStatus {
+  UNPAID
+  PARTIAL
+  PAID
+  OVERDUE
+  CREDITED
+}
+
+enum NumberingResetPeriod {
+  NEVER
+  FISCAL_YEAR
+  MONTHLY
+}
+
+enum TaxChargeType {
+  ON_NET_TOTAL
+  ON_PREVIOUS_ROW_AMOUNT
+  ON_PREVIOUS_ROW_TOTAL
+}
+
+enum TaxTemplateScope {
+  ITEM
+  INVOICE
+  BOTH
+}
+
+enum PaymentEntryStatus {
+  DRAFT
+  SUBMITTED
+  CANCELLED
+}
+
+enum PaymentAllocationType {
+  INVOICE
+  ADVANCE
+  CREDIT_NOTE
+}
+
+enum LedgerVoucherType {
+  SALES_INVOICE
+  PAYMENT_ENTRY
+  CREDIT_NOTE
+  CANCELLATION
+}
+
+enum CreditNoteReason {
+  SALES_RETURN
+  RATE_ADJUSTMENT
+  DISCOUNT
+  TAX_CORRECTION
+  FULL_REVERSAL
+  OTHER
+}
+
+enum RecurrenceFrequency {
+  MONTHLY
+  QUARTERLY
+  ANNUALLY
+}
+
+enum PrintFormatDocType {
+  SALES_INVOICE
+  CREDIT_NOTE
+  PAYMENT_ENTRY
+}
+
 model JournalLine {
-  id              String        @id @default(cuid())
+  id              String       @id @default(cuid())
   journalEntryId  String
-  journalEntry    JournalEntry  @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
+  journalEntry    JournalEntry @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
   debitAccountId  String?
-  debitAccount    Account?      @relation("DebitAccount", fields: [debitAccountId], references: [id])
+  debitAccount    Account?     @relation("DebitAccount", fields: [debitAccountId], references: [id])
   creditAccountId String?
-  creditAccount   Account?      @relation("CreditAccount", fields: [creditAccountId], references: [id])
-  debit           Float         @default(0)
-  credit          Float         @default(0)
+  creditAccount   Account?     @relation("CreditAccount", fields: [creditAccountId], references: [id])
+  debit           Decimal      @default(0) @db.Decimal(18, 6)
+  credit          Decimal      @default(0) @db.Decimal(18, 6)
   description     String?
-  createdAt       DateTime      @default(now())
+  createdAt       DateTime     @default(now())
+}
+
+model NumberingSeries {
+  id           String               @id @default(cuid())
+  documentType DocumentType
+  name         String
+  pattern      String
+  prefix       String?
+  current      Int                  @default(0)
+  digits       Int                  @default(5)
+  resetPeriod  NumberingResetPeriod @default(FISCAL_YEAR)
+  fiscalYearId String?
+  fiscalYear   FiscalYear?          @relation(fields: [fiscalYearId], references: [id])
+  branch       String?
+  isDefault    Boolean              @default(false)
+  isActive     Boolean              @default(true)
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+
+  @@unique([documentType, name, fiscalYearId, branch])
+  @@index([documentType, isDefault, isActive])
 }
 
 // ===================== INVENTORY =====================
@@ -168,38 +277,47 @@ model Unit {
   symbol    String
   createdAt DateTime @default(now())
 
-  products Product[]
+  products          Product[]
+  salesInvoiceItems SalesInvoiceItem[]
+  subscriptionItems SubscriptionTemplateItem[]
 }
 
 model Product {
-  id            String      @id @default(cuid())
-  sku           String      @unique
-  name          String
-  description   String?
-  categoryId    String?
-  category      Category?   @relation(fields: [categoryId], references: [id])
-  unitId        String?
-  unit          Unit?       @relation(fields: [unitId], references: [id])
-  type          ProductType @default(PRODUCT)
-  costPrice     Float       @default(0)
-  salePrice     Float       @default(0)
-  taxRate       Float       @default(0)
-  minStockLevel Float       @default(0)
-  maxStockLevel Float?
-  isActive      Boolean     @default(true)
-  image         String?
-  barcode       String?
-  weight        Float?
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
+  id                   String       @id @default(cuid())
+  sku                  String       @unique
+  name                 String
+  description          String?
+  categoryId           String?
+  category             Category?    @relation(fields: [categoryId], references: [id])
+  unitId               String?
+  unit                 Unit?        @relation(fields: [unitId], references: [id])
+  type                 ProductType  @default(PRODUCT)
+  costPrice            Decimal      @default(0) @db.Decimal(18, 6)
+  salePrice            Decimal      @default(0) @db.Decimal(18, 6)
+  taxRate              Decimal      @default(0) @db.Decimal(9, 4)
+  minStockLevel        Decimal      @default(0) @db.Decimal(18, 6)
+  maxStockLevel        Decimal?     @db.Decimal(18, 6)
+  isActive             Boolean      @default(true)
+  image                String?
+  barcode              String?
+  weight               Decimal?     @db.Decimal(18, 6)
+  hsnCode              String?
+  taxCode              String?
+  defaultTaxTemplateId String?
+  defaultTaxTemplate   TaxTemplate? @relation("ProductDefaultTaxTemplate", fields: [defaultTaxTemplateId], references: [id])
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
 
   stockLevels          StockLevel[]
   movements            StockMovement[]
+  deliveryNoteItems    DeliveryNoteItem[]
   salesOrderItems      SalesOrderItem[]
   purchaseOrderItems   PurchaseOrderItem[]
   salesInvoiceItems    SalesInvoiceItem[]
   purchaseInvoiceItems PurchaseInvoiceItem[]
   quotationItems       QuotationItem[]
+  creditNoteItems      CreditNoteItem[]
+  subscriptionItems    SubscriptionTemplateItem[]
 }
 
 enum ProductType {
@@ -221,6 +339,7 @@ model Warehouse {
 
   stockLevels StockLevel[]
   movements   StockMovement[]
+  deliveryNotes DeliveryNote[]
 }
 
 model StockLevel {
@@ -359,13 +478,13 @@ enum AttendanceStatus {
 }
 
 model LeaveType {
-  id           String       @id @default(cuid())
-  name         String
-  daysAllowed  Int
-  isPaid       Boolean      @default(true)
-  description  String?
-  isActive     Boolean      @default(true)
-  createdAt    DateTime     @default(now())
+  id          String   @id @default(cuid())
+  name        String
+  daysAllowed Int
+  isPaid      Boolean  @default(true)
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
 
   leaveRequests LeaveRequest[]
 }
@@ -590,17 +709,21 @@ model Customer {
   zip          String?
   taxId        String?
   currency     String   @default("USD")
-  creditLimit  Float    @default(0)
+  creditLimit  Decimal  @default(0) @db.Decimal(18, 6)
   paymentTerms Int      @default(30)
   notes        String?
   isActive     Boolean  @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  salesOrders SalesOrder[]
-  invoices    SalesInvoice[]
-  quotations  Quotation[]
-  payments    Payment[]
+  salesOrders    SalesOrder[]
+  deliveryNotes  DeliveryNote[]
+  invoices       SalesInvoice[]
+  quotations     Quotation[]
+  payments       Payment[]
+  paymentEntries PaymentEntry[]
+  creditNotes    CreditNote[]
+  subscriptions  SubscriptionTemplate[]
 }
 
 model Supplier {
@@ -637,10 +760,10 @@ model Quotation {
   date        DateTime        @default(now())
   validUntil  DateTime?
   status      QuotationStatus @default(DRAFT)
-  subtotal    Float           @default(0)
-  taxAmount   Float           @default(0)
-  discount    Float           @default(0)
-  total       Float           @default(0)
+  subtotal    Decimal         @default(0) @db.Decimal(18, 6)
+  taxAmount   Decimal         @default(0) @db.Decimal(18, 6)
+  discount    Decimal         @default(0) @db.Decimal(18, 6)
+  total       Decimal         @default(0) @db.Decimal(18, 6)
   currency    String          @default("USD")
   notes       String?
   terms       String?
@@ -666,11 +789,11 @@ model QuotationItem {
   productId   String
   product     Product   @relation(fields: [productId], references: [id])
   description String?
-  quantity    Float
-  unitPrice   Float
-  taxRate     Float     @default(0)
-  discount    Float     @default(0)
-  total       Float
+  quantity    Decimal   @db.Decimal(18, 6)
+  unitPrice   Decimal   @db.Decimal(18, 6)
+  taxRate     Decimal   @default(0) @db.Decimal(9, 4)
+  discount    Decimal   @default(0) @db.Decimal(9, 4)
+  total       Decimal   @db.Decimal(18, 6)
   createdAt   DateTime  @default(now())
 }
 
@@ -684,18 +807,19 @@ model SalesOrder {
   date         DateTime         @default(now())
   deliveryDate DateTime?
   status       SalesOrderStatus @default(DRAFT)
-  subtotal     Float            @default(0)
-  taxAmount    Float            @default(0)
-  discount     Float            @default(0)
-  total        Float            @default(0)
+  subtotal     Decimal          @default(0) @db.Decimal(18, 6)
+  taxAmount    Decimal          @default(0) @db.Decimal(18, 6)
+  discount     Decimal          @default(0) @db.Decimal(18, 6)
+  total        Decimal          @default(0) @db.Decimal(18, 6)
   currency     String           @default("USD")
   notes        String?
   terms        String?
   createdAt    DateTime         @default(now())
   updatedAt    DateTime         @updatedAt
 
-  items    SalesOrderItem[]
-  invoices SalesInvoice[]
+  items         SalesOrderItem[]
+  deliveryNotes DeliveryNote[]
+  invoices      SalesInvoice[]
 }
 
 enum SalesOrderStatus {
@@ -714,39 +838,104 @@ model SalesOrderItem {
   productId    String
   product      Product    @relation(fields: [productId], references: [id])
   description  String?
-  quantity     Float
-  unitPrice    Float
-  taxRate      Float      @default(0)
-  discount     Float      @default(0)
-  total        Float
-  deliveredQty Float      @default(0)
+  quantity     Decimal    @db.Decimal(18, 6)
+  unitPrice    Decimal    @db.Decimal(18, 6)
+  taxRate      Decimal    @default(0) @db.Decimal(9, 4)
+  discount     Decimal    @default(0) @db.Decimal(9, 4)
+  total        Decimal    @db.Decimal(18, 6)
+  deliveredQty Decimal    @default(0) @db.Decimal(18, 6)
   createdAt    DateTime   @default(now())
 }
 
 // ===================== INVOICING =====================
 model SalesInvoice {
-  id           String        @id @default(cuid())
-  invoiceNo    String        @unique
-  customerId   String
-  customer     Customer      @relation(fields: [customerId], references: [id])
-  salesOrderId String?
-  salesOrder   SalesOrder?   @relation(fields: [salesOrderId], references: [id])
-  date         DateTime      @default(now())
-  dueDate      DateTime?
-  status       InvoiceStatus @default(DRAFT)
-  subtotal     Float         @default(0)
-  taxAmount    Float         @default(0)
-  discount     Float         @default(0)
-  total        Float         @default(0)
-  amountPaid   Float         @default(0)
-  currency     String        @default("USD")
-  notes        String?
-  terms        String?
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+  id                 String               @id @default(cuid())
+  invoiceNo          String               @unique
+  seriesId           String?
+  customerId         String
+  customer           Customer             @relation(fields: [customerId], references: [id])
+  salesOrderId       String?
+  salesOrder         SalesOrder?          @relation(fields: [salesOrderId], references: [id])
+  deliveryNoteId     String?
+  deliveryNote       DeliveryNote?        @relation(fields: [deliveryNoteId], references: [id])
+  amendedFromId      String?
+  amendedFrom        SalesInvoice?        @relation("SalesInvoiceAmendments", fields: [amendedFromId], references: [id])
+  amendments         SalesInvoice[]       @relation("SalesInvoiceAmendments")
+  date               DateTime             @default(now())
+  dueDate            DateTime?
+  submittedAt        DateTime?
+  cancelledAt        DateTime?
+  status             DocumentStatus       @default(DRAFT)
+  paymentStatus      InvoicePaymentStatus @default(UNPAID)
+  taxInclusive       Boolean              @default(false)
+  subtotal           Decimal              @default(0) @db.Decimal(18, 6)
+  taxAmount          Decimal              @default(0) @db.Decimal(18, 6)
+  discount           Decimal              @default(0) @db.Decimal(18, 6)
+  roundingAdjustment Decimal              @default(0) @db.Decimal(18, 6)
+  total              Decimal              @default(0) @db.Decimal(18, 6)
+  grandTotal         Decimal              @default(0) @db.Decimal(18, 6)
+  outstandingAmount  Decimal              @default(0) @db.Decimal(18, 6)
+  amountPaid         Decimal              @default(0) @db.Decimal(18, 6)
+  currency           String               @default("USD")
+  notes              String?
+  terms              String?
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
 
-  items    SalesInvoiceItem[]
-  payments Payment[]
+  items              SalesInvoiceItem[]
+  taxes              SalesInvoiceTax[]
+  payments           Payment[]
+  paymentAllocations PaymentEntryAllocation[]
+  creditNotes        CreditNote[]
+  ledgerEntries      GeneralLedgerEntry[]
+  auditLogs          AuditLog[]
+  subscriptionRuns   SubscriptionInvoiceRun[]
+
+  @@index([customerId, status, paymentStatus])
+  @@index([salesOrderId])
+  @@index([deliveryNoteId])
+  @@index([dueDate])
+}
+
+model DeliveryNote {
+  id           String         @id @default(cuid())
+  deliveryNo   String         @unique
+  seriesId     String?
+  customerId   String
+  customer     Customer       @relation(fields: [customerId], references: [id])
+  salesOrderId String?
+  salesOrder   SalesOrder?    @relation(fields: [salesOrderId], references: [id])
+  warehouseId  String?
+  warehouse    Warehouse?     @relation(fields: [warehouseId], references: [id])
+  date         DateTime       @default(now())
+  postingDate  DateTime?
+  status       DocumentStatus @default(DRAFT)
+  submittedAt  DateTime?
+  cancelledAt  DateTime?
+  notes        String?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  items     DeliveryNoteItem[]
+  invoices  SalesInvoice[]
+  auditLogs AuditLog[]
+
+  @@index([customerId, status])
+  @@index([salesOrderId])
+  @@index([warehouseId])
+}
+
+model DeliveryNoteItem {
+  id             String       @id @default(cuid())
+  deliveryNoteId String
+  deliveryNote   DeliveryNote @relation(fields: [deliveryNoteId], references: [id], onDelete: Cascade)
+  productId      String
+  product        Product      @relation(fields: [productId], references: [id])
+  itemCode       String       @default("")
+  description    String?
+  quantity       Decimal      @db.Decimal(18, 6)
+  deliveredQty   Decimal      @default(0) @db.Decimal(18, 6)
+  createdAt      DateTime     @default(now())
 }
 
 enum InvoiceStatus {
@@ -764,13 +953,90 @@ model SalesInvoiceItem {
   salesInvoice   SalesInvoice @relation(fields: [salesInvoiceId], references: [id], onDelete: Cascade)
   productId      String
   product        Product      @relation(fields: [productId], references: [id])
+  itemCode       String       @default("")
   description    String?
-  quantity       Float
-  unitPrice      Float
-  taxRate        Float        @default(0)
-  discount       Float        @default(0)
-  total          Float
+  hsnCode        String?
+  taxCode        String?
+  uomId          String?
+  uom            Unit?        @relation(fields: [uomId], references: [id])
+  quantity       Decimal      @db.Decimal(18, 6)
+  unitPrice      Decimal      @default(0) @db.Decimal(18, 6)
+  rate           Decimal      @db.Decimal(18, 6)
+  discount       Decimal      @default(0) @db.Decimal(9, 4)
+  taxRate        Decimal      @default(0) @db.Decimal(9, 4)
+  netAmount      Decimal      @default(0) @db.Decimal(18, 6)
+  taxAmount      Decimal      @default(0) @db.Decimal(18, 6)
+  total          Decimal      @default(0) @db.Decimal(18, 6)
+  taxTemplateId  String?
+  taxTemplate    TaxTemplate? @relation(fields: [taxTemplateId], references: [id])
   createdAt      DateTime     @default(now())
+
+  taxes SalesInvoiceItemTax[]
+}
+
+model TaxTemplate {
+  id          String           @id @default(cuid())
+  name        String
+  code        String           @unique
+  scope       TaxTemplateScope @default(BOTH)
+  description String?
+  isDefault   Boolean          @default(false)
+  isActive    Boolean          @default(true)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  lines             TaxTemplateLine[]
+  products          Product[]                  @relation("ProductDefaultTaxTemplate")
+  invoiceItems      SalesInvoiceItem[]
+  subscriptionItems SubscriptionTemplateItem[]
+}
+
+model TaxTemplateLine {
+  id            String        @id @default(cuid())
+  taxTemplateId String
+  taxTemplate   TaxTemplate   @relation(fields: [taxTemplateId], references: [id], onDelete: Cascade)
+  accountId     String?
+  account       Account?      @relation(fields: [accountId], references: [id])
+  label         String
+  rate          Decimal       @db.Decimal(9, 4)
+  chargeType    TaxChargeType @default(ON_NET_TOTAL)
+  rowOrder      Int           @default(0)
+  isRecoverable Boolean       @default(false)
+  createdAt     DateTime      @default(now())
+
+  invoiceTaxes     SalesInvoiceTax[]
+  invoiceItemTaxes SalesInvoiceItemTax[]
+  creditNoteTaxes  CreditNoteTax[]
+}
+
+model SalesInvoiceTax {
+  id                String           @id @default(cuid())
+  salesInvoiceId    String
+  salesInvoice      SalesInvoice     @relation(fields: [salesInvoiceId], references: [id], onDelete: Cascade)
+  taxTemplateLineId String?
+  taxTemplateLine   TaxTemplateLine? @relation(fields: [taxTemplateLineId], references: [id])
+  accountId         String?
+  account           Account?         @relation(fields: [accountId], references: [id])
+  label             String
+  rate              Decimal          @db.Decimal(9, 4)
+  taxableAmount     Decimal          @default(0) @db.Decimal(18, 6)
+  taxAmount         Decimal          @default(0) @db.Decimal(18, 6)
+  rowOrder          Int              @default(0)
+  snapshot          Json?
+}
+
+model SalesInvoiceItemTax {
+  id                 String           @id @default(cuid())
+  salesInvoiceItemId String
+  salesInvoiceItem   SalesInvoiceItem @relation(fields: [salesInvoiceItemId], references: [id], onDelete: Cascade)
+  taxTemplateLineId  String?
+  taxTemplateLine    TaxTemplateLine? @relation(fields: [taxTemplateLineId], references: [id])
+  label              String
+  rate               Decimal          @db.Decimal(9, 4)
+  taxableAmount      Decimal          @default(0) @db.Decimal(18, 6)
+  taxAmount          Decimal          @default(0) @db.Decimal(18, 6)
+  rowOrder           Int              @default(0)
+  snapshot           Json?
 }
 
 model Payment {
@@ -782,12 +1048,56 @@ model Payment {
   invoiceId  String?
   invoice    SalesInvoice? @relation(fields: [invoiceId], references: [id])
   date       DateTime      @default(now())
-  amount     Float
+  amount     Decimal       @db.Decimal(18, 6)
   currency   String        @default("USD")
   method     PaymentMethod @default(BANK_TRANSFER)
   reference  String?
   notes      String?
   createdAt  DateTime      @default(now())
+}
+
+model PaymentEntry {
+  id                String             @id @default(cuid())
+  paymentNo         String             @unique
+  seriesId          String?
+  status            PaymentEntryStatus @default(DRAFT)
+  type              PaymentType
+  customerId        String?
+  customer          Customer?          @relation(fields: [customerId], references: [id])
+  date              DateTime           @default(now())
+  submittedAt       DateTime?
+  cancelledAt       DateTime?
+  paidAmount        Decimal            @default(0) @db.Decimal(18, 6)
+  allocatedAmount   Decimal            @default(0) @db.Decimal(18, 6)
+  unallocatedAmount Decimal            @default(0) @db.Decimal(18, 6)
+  currency          String             @default("USD")
+  method            PaymentMethod      @default(BANK_TRANSFER)
+  reference         String?
+  notes             String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  allocations   PaymentEntryAllocation[]
+  ledgerEntries GeneralLedgerEntry[]
+
+  @@index([customerId, status])
+  @@index([date])
+}
+
+model PaymentEntryAllocation {
+  id              String                @id @default(cuid())
+  paymentEntryId  String
+  paymentEntry    PaymentEntry          @relation(fields: [paymentEntryId], references: [id], onDelete: Cascade)
+  allocationType  PaymentAllocationType @default(INVOICE)
+  invoiceId       String?
+  invoice         SalesInvoice?         @relation(fields: [invoiceId], references: [id])
+  creditNoteId    String?
+  creditNote      CreditNote?           @relation(fields: [creditNoteId], references: [id])
+  allocatedAmount Decimal               @db.Decimal(18, 6)
+  createdAt       DateTime              @default(now())
+
+  @@index([invoiceId])
+  @@index([creditNoteId])
 }
 
 enum PaymentType {
@@ -798,9 +1108,203 @@ enum PaymentType {
 enum PaymentMethod {
   CASH
   BANK_TRANSFER
+  CARD
   CREDIT_CARD
   CHEQUE
   ONLINE
+  UPI
+}
+
+model CreditNote {
+  id                String           @id @default(cuid())
+  creditNoteNo      String           @unique
+  seriesId          String?
+  customerId        String
+  customer          Customer         @relation(fields: [customerId], references: [id])
+  originalInvoiceId String
+  originalInvoice   SalesInvoice     @relation(fields: [originalInvoiceId], references: [id])
+  status            DocumentStatus   @default(DRAFT)
+  reason            CreditNoteReason @default(OTHER)
+  date              DateTime         @default(now())
+  submittedAt       DateTime?
+  cancelledAt       DateTime?
+  subtotal          Decimal          @default(0) @db.Decimal(18, 6)
+  taxAmount         Decimal          @default(0) @db.Decimal(18, 6)
+  grandTotal        Decimal          @default(0) @db.Decimal(18, 6)
+  currency          String           @default("USD")
+  notes             String?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  items              CreditNoteItem[]
+  taxes              CreditNoteTax[]
+  paymentAllocations PaymentEntryAllocation[]
+  ledgerEntries      GeneralLedgerEntry[]
+  auditLogs          AuditLog[]
+
+  @@index([customerId, status])
+  @@index([originalInvoiceId])
+}
+
+model CreditNoteItem {
+  id           String     @id @default(cuid())
+  creditNoteId String
+  creditNote   CreditNote @relation(fields: [creditNoteId], references: [id], onDelete: Cascade)
+  productId    String
+  product      Product    @relation(fields: [productId], references: [id])
+  itemCode     String
+  description  String?
+  hsnCode      String?
+  quantity     Decimal    @db.Decimal(18, 6)
+  rate         Decimal    @db.Decimal(18, 6)
+  discount     Decimal    @default(0) @db.Decimal(9, 4)
+  netAmount    Decimal    @default(0) @db.Decimal(18, 6)
+  taxAmount    Decimal    @default(0) @db.Decimal(18, 6)
+  total        Decimal    @default(0) @db.Decimal(18, 6)
+  createdAt    DateTime   @default(now())
+}
+
+model CreditNoteTax {
+  id                String           @id @default(cuid())
+  creditNoteId      String
+  creditNote        CreditNote       @relation(fields: [creditNoteId], references: [id], onDelete: Cascade)
+  taxTemplateLineId String?
+  taxTemplateLine   TaxTemplateLine? @relation(fields: [taxTemplateLineId], references: [id])
+  accountId         String?
+  account           Account?         @relation(fields: [accountId], references: [id])
+  label             String
+  rate              Decimal          @db.Decimal(9, 4)
+  taxableAmount     Decimal          @default(0) @db.Decimal(18, 6)
+  taxAmount         Decimal          @default(0) @db.Decimal(18, 6)
+  rowOrder          Int              @default(0)
+  snapshot          Json?
+}
+
+model GeneralLedgerEntry {
+  id             String            @id @default(cuid())
+  postingDate    DateTime          @default(now())
+  accountId      String
+  account        Account           @relation(fields: [accountId], references: [id])
+  customerId     String?
+  voucherType    LedgerVoucherType
+  voucherId      String
+  invoiceId      String?
+  invoice        SalesInvoice?     @relation(fields: [invoiceId], references: [id])
+  paymentEntryId String?
+  paymentEntry   PaymentEntry?     @relation(fields: [paymentEntryId], references: [id])
+  creditNoteId   String?
+  creditNote     CreditNote?       @relation(fields: [creditNoteId], references: [id])
+  debit          Decimal           @default(0) @db.Decimal(18, 6)
+  credit         Decimal           @default(0) @db.Decimal(18, 6)
+  currency       String            @default("USD")
+  remarks        String?
+  isReversal     Boolean           @default(false)
+  reversalOfId   String?
+  createdAt      DateTime          @default(now())
+
+  @@index([accountId, postingDate])
+  @@index([voucherType, voucherId])
+  @@index([invoiceId])
+  @@index([paymentEntryId])
+  @@index([creditNoteId])
+}
+
+model PrintFormat {
+  id         String             @id @default(cuid())
+  name       String
+  docType    PrintFormatDocType
+  isDefault  Boolean            @default(false)
+  isActive   Boolean            @default(true)
+  template   Json
+  letterhead Json?
+  footer     String?
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
+
+  @@unique([docType, name])
+  @@index([docType, isDefault, isActive])
+}
+
+model SubscriptionTemplate {
+  id           String              @id @default(cuid())
+  name         String
+  customerId   String
+  customer     Customer            @relation(fields: [customerId], references: [id])
+  seriesId     String?
+  frequency    RecurrenceFrequency
+  startDate    DateTime
+  endDate      DateTime?
+  nextRunDate  DateTime
+  autoSubmit   Boolean             @default(false)
+  isActive     Boolean             @default(true)
+  taxInclusive Boolean             @default(false)
+  currency     String              @default("USD")
+  notes        String?
+  terms        String?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  items             SubscriptionTemplateItem[]
+  generatedInvoices SubscriptionInvoiceRun[]
+
+  @@index([isActive, nextRunDate])
+  @@index([customerId])
+}
+
+model SubscriptionTemplateItem {
+  id                     String               @id @default(cuid())
+  subscriptionTemplateId String
+  subscriptionTemplate   SubscriptionTemplate @relation(fields: [subscriptionTemplateId], references: [id], onDelete: Cascade)
+  productId              String
+  product                Product              @relation(fields: [productId], references: [id])
+  itemCode               String
+  description            String?
+  hsnCode                String?
+  uomId                  String?
+  uom                    Unit?                @relation(fields: [uomId], references: [id])
+  quantity               Decimal              @db.Decimal(18, 6)
+  rate                   Decimal              @db.Decimal(18, 6)
+  discount               Decimal              @default(0) @db.Decimal(9, 4)
+  taxTemplateId          String?
+  taxTemplate            TaxTemplate?         @relation(fields: [taxTemplateId], references: [id])
+}
+
+model SubscriptionInvoiceRun {
+  id                     String               @id @default(cuid())
+  subscriptionTemplateId String
+  subscriptionTemplate   SubscriptionTemplate @relation(fields: [subscriptionTemplateId], references: [id])
+  invoiceId              String
+  invoice                SalesInvoice         @relation(fields: [invoiceId], references: [id])
+  runDate                DateTime
+  createdAt              DateTime             @default(now())
+
+  @@unique([subscriptionTemplateId, invoiceId])
+}
+
+model AuditLog {
+  id             String        @id @default(cuid())
+  actorId        String?
+  actorEmail     String?
+  actorRole      String?
+  entityType     DocumentType
+  entityId       String
+  action         String
+  statusBefore   String?
+  statusAfter    String?
+  message        String?
+  diff           Json?
+  invoiceId      String?
+  invoice        SalesInvoice? @relation(fields: [invoiceId], references: [id])
+  deliveryNoteId String?
+  deliveryNote   DeliveryNote? @relation(fields: [deliveryNoteId], references: [id])
+  creditNoteId   String?
+  creditNote     CreditNote?   @relation(fields: [creditNoteId], references: [id])
+  createdAt      DateTime      @default(now())
+
+  @@index([entityType, entityId, createdAt])
+  @@index([invoiceId, createdAt])
+  @@index([deliveryNoteId, createdAt])
+  @@index([creditNoteId, createdAt])
 }
 
 // ===================== PROCUREMENT =====================

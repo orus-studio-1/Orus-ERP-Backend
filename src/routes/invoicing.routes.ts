@@ -1,20 +1,36 @@
 import { Router } from 'express';
 import {
-  getSalesInvoices, getSalesInvoice, createSalesInvoice, updateInvoiceStatus, deleteSalesInvoice,
-  getPayments, createPayment, deletePayment,
-  getCustomerInvoices, getCustomerOutstandingSummary,
-  searchProducts, createInvoiceFromSalesOrder, updateSalesInvoice,
-  getAgingReport, getPayment,
-} from '../controllers/invoicing.controller';
+  createInvoice as createSalesInvoice,
+  createInvoiceFromSalesOrder,
+  createInvoiceFromDeliveryNote,
+  createPayment,
+  deleteInvoice as deleteSalesInvoice,
+  deletePayment,
+  getAgingReport,
+  getInvoice as getSalesInvoice,
+  getInvoices as getSalesInvoices,
+  getPayment,
+  getPayments,
+  getInvoicePdf,
+  amendInvoice,
+  updateInvoice as updateSalesInvoice,
+  updateInvoiceStatus,
+} from '../controllers/invoices.controller';
+import { getCustomerInvoices, getCustomerOutstanding as getCustomerOutstandingSummary } from '../controllers/customers.controller';
+import { searchProducts } from '../controllers/inventory.controller';
 import { authenticate } from '../middleware/auth';
 
 const router = Router();
 router.use(authenticate);
 
 router.route('/sales-invoices').get(getSalesInvoices).post(createSalesInvoice);
-router.route('/sales-invoices/:id').get(getSalesInvoice).delete(deleteSalesInvoice);
+router.route('/sales-invoices/:id').get(getSalesInvoice).patch(updateSalesInvoice).delete(deleteSalesInvoice);
 router.put('/sales-invoices/:id/status', updateInvoiceStatus);
+router.patch('/sales-invoices/:id/status', updateInvoiceStatus);
+router.post('/sales-invoices/:id/amend', amendInvoice);
+router.get('/sales-invoices/:id/pdf', getInvoicePdf);
 router.post('/invoices/from-sales-order/:salesOrderId', createInvoiceFromSalesOrder);
+router.post('/invoices/from-delivery-note/:deliveryNoteId', createInvoiceFromDeliveryNote);
 router.patch('/invoices/:id', updateSalesInvoice);
 
 router.route('/payments').get(getPayments).post(createPayment);

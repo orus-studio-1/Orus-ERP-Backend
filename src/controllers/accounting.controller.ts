@@ -204,8 +204,8 @@ export const getTrialBalance = async (req: Request, res: Response) => {
       code: acc.code,
       name: acc.name,
       type: acc.type,
-      totalDebit: acc.debitLines.reduce((s, l) => s + l.debit, 0),
-      totalCredit: acc.creditLines.reduce((s, l) => s + l.credit, 0),
+      totalDebit: acc.debitLines.reduce((s, l) => s + Number(l.debit), 0),
+      totalCredit: acc.creditLines.reduce((s, l) => s + Number(l.credit), 0),
     }));
 
     return success(res, report);
@@ -213,4 +213,3 @@ export const getTrialBalance = async (req: Request, res: Response) => {
     return handlePrismaError(res, err);
   }
 };
-
