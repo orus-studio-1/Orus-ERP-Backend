@@ -37,6 +37,8 @@ enum UserRole {
   EMPLOYEE
   ACCOUNTANT
   HR_MANAGER
+  HR_OFFICER
+  PAYROLL_OFFICER
   SALES_REP
   PURCHASE_MANAGER
 }
@@ -147,6 +149,12 @@ enum DocumentType {
   CREDIT_NOTE
   PURCHASE_ORDER
   PURCHASE_INVOICE
+  EMPLOYEE
+  ATTENDANCE
+  LEAVE_APPLICATION
+  PAYROLL_ENTRY
+  SALARY_SLIP
+  EMPLOYEE_LIFECYCLE
 }
 
 enum DocumentStatus {
@@ -219,6 +227,58 @@ enum PrintFormatDocType {
   SALES_INVOICE
   CREDIT_NOTE
   PAYMENT_ENTRY
+}
+
+enum LifecycleEventType {
+  ONBOARDING
+  PROMOTION
+  TRANSFER
+  SEPARATION
+}
+
+enum LifecycleEventStatus {
+  DRAFT
+  SUBMITTED
+  CANCELLED
+}
+
+enum CheckinType {
+  IN
+  OUT
+}
+
+enum ShiftAssignmentStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum LeaveLedgerEntryType {
+  ALLOCATION
+  APPLICATION
+  ENCASHMENT
+  EXPIRY
+  ADJUSTMENT
+}
+
+enum SalaryComponentType {
+  EARNING
+  DEDUCTION
+  TAX
+  BENEFIT
+}
+
+enum PayrollEntryStatus {
+  DRAFT
+  SUBMITTED
+  PAID
+  CANCELLED
+}
+
+enum SalarySlipStatus {
+  DRAFT
+  SUBMITTED
+  PAID
+  CANCELLED
 }
 
 model JournalLine {
@@ -422,6 +482,16 @@ model Employee {
   terminatedDate DateTime?
   salary         Float
   salaryType     SalaryType     @default(MONTHLY)
+  employmentType String?
+  branch         String?
+  grade          String?
+  gender         String?
+  dateOfBirth    DateTime?
+  maritalStatus  String?
+  workLocation   String?
+  personalEmail  String?
+  companyEmail   String?
+  noticePeriodDays Int?
   bankAccount    String?
   bankName       String?
   taxId          String?
@@ -437,6 +507,14 @@ model Employee {
   attendance    Attendance[]
   leaveRequests LeaveRequest[]
   payrolls      Payroll[]
+  checkins      EmployeeCheckin[]
+  shiftAssignments ShiftAssignment[]
+  leaveAllocations LeaveAllocation[]
+  leaveLedgerEntries LeaveLedgerEntry[]
+  leavePolicyAssignments LeavePolicyAssignment[]
+  salaryAssignments SalaryStructureAssignment[]
+  salarySlips   SalarySlip[]
+  lifecycleEvents EmployeeLifecycleEvent[]
 }
 
 enum SalaryType {
@@ -487,6 +565,9 @@ model LeaveType {
   createdAt   DateTime @default(now())
 
   leaveRequests LeaveRequest[]
+  policyDetails LeavePolicyDetail[]
+  allocations   LeaveAllocation[]
+  ledgerEntries LeaveLedgerEntry[]
 }
 
 model LeaveRequest {
@@ -555,6 +636,288 @@ enum PayrollItemType {
   EARNING
   DEDUCTION
   TAX
+}
+
+model ShiftType {
+  id          String   @id @default(cuid())
+  name        String
+  startTime   String
+  endTime     String
+  graceMinutes Int     @default(0)
+  isNightShift Boolean @default(false)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  assignments ShiftAssignment[]
+}
+
+model ShiftAssignment {
+  id          String                @id @default(cuid())
+  employeeId  String
+  employee    Employee              @relation(fields: [employeeId], references: [id])
+  shiftTypeId String
+  shiftType   ShiftType             @relation(fields: [shiftTypeId], references: [id])
+  startDate   DateTime
+  endDate     DateTime?
+  status      ShiftAssignmentStatus @default(ACTIVE)
+  createdAt   DateTime              @default(now())
+
+  @@index([employeeId, startDate])
+}
+
+model EmployeeCheckin {
+  id          String      @id @default(cuid())
+  employeeId  String
+  employee    Employee    @relation(fields: [employeeId], references: [id])
+  logType     CheckinType
+  time        DateTime    @default(now())
+  deviceId    String?
+  location    String?
+  notes       String?
+  attendanceId String?
+  createdAt   DateTime    @default(now())
+
+  @@index([employeeId, time])
+}
+
+model HolidayList {
+  id          String    @id @default(cuid())
+  name        String
+  year        Int
+  isDefault   Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  holidays    Holiday[]
+
+  @@unique([name, year])
+}
+
+model Holiday {
+  id            String      @id @default(cuid())
+  holidayListId String
+  holidayList   HolidayList @relation(fields: [holidayListId], references: [id], onDelete: Cascade)
+  date          DateTime
+  description   String?
+  isWeeklyOff   Boolean     @default(false)
+
+  @@unique([holidayListId, date])
+}
+
+model LeavePeriod {
+  id          String   @id @default(cuid())
+  name        String
+  fromDate    DateTime
+  toDate      DateTime
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  allocations LeaveAllocation[]
+  policyAssignments LeavePolicyAssignment[]
+}
+
+model LeavePolicy {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  details     LeavePolicyDetail[]
+  assignments LeavePolicyAssignment[]
+}
+
+model LeavePolicyDetail {
+  id            String      @id @default(cuid())
+  leavePolicyId String
+  leavePolicy   LeavePolicy @relation(fields: [leavePolicyId], references: [id], onDelete: Cascade)
+  leaveTypeId   String
+  leaveType     LeaveType   @relation(fields: [leaveTypeId], references: [id])
+  annualAllocation Decimal   @default(0) @db.Decimal(10, 2)
+
+  @@unique([leavePolicyId, leaveTypeId])
+}
+
+model LeavePolicyAssignment {
+  id            String      @id @default(cuid())
+  employeeId    String
+  employee      Employee    @relation(fields: [employeeId], references: [id])
+  leavePolicyId String
+  leavePolicy   LeavePolicy @relation(fields: [leavePolicyId], references: [id])
+  leavePeriodId String
+  leavePeriod   LeavePeriod @relation(fields: [leavePeriodId], references: [id])
+  assignedAt    DateTime    @default(now())
+
+  @@unique([employeeId, leavePolicyId, leavePeriodId])
+}
+
+model LeaveAllocation {
+  id            String      @id @default(cuid())
+  employeeId    String
+  employee      Employee    @relation(fields: [employeeId], references: [id])
+  leaveTypeId   String
+  leaveType     LeaveType   @relation(fields: [leaveTypeId], references: [id])
+  leavePeriodId String?
+  leavePeriod   LeavePeriod? @relation(fields: [leavePeriodId], references: [id])
+  allocated     Decimal     @default(0) @db.Decimal(10, 2)
+  used          Decimal     @default(0) @db.Decimal(10, 2)
+  balance       Decimal     @default(0) @db.Decimal(10, 2)
+  fromDate      DateTime
+  toDate        DateTime
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@unique([employeeId, leaveTypeId, fromDate, toDate])
+}
+
+model LeaveLedgerEntry {
+  id             String               @id @default(cuid())
+  employeeId     String
+  employee       Employee             @relation(fields: [employeeId], references: [id])
+  leaveTypeId    String
+  leaveType      LeaveType            @relation(fields: [leaveTypeId], references: [id])
+  leaveRequestId String?
+  entryType      LeaveLedgerEntryType
+  transactionDate DateTime            @default(now())
+  leaves         Decimal              @db.Decimal(10, 2)
+  balanceAfter   Decimal              @default(0) @db.Decimal(10, 2)
+  notes          String?
+  createdAt      DateTime             @default(now())
+
+  @@index([employeeId, leaveTypeId, transactionDate])
+}
+
+model SalaryComponent {
+  id          String              @id @default(cuid())
+  name        String              @unique
+  type        SalaryComponentType
+  description String?
+  defaultAmount Decimal?          @db.Decimal(18, 6)
+  formula     String?
+  isTaxable   Boolean             @default(false)
+  isActive    Boolean             @default(true)
+  createdAt   DateTime            @default(now())
+
+  structureComponents SalaryStructureComponent[]
+  slipItems SalarySlipItem[]
+}
+
+model SalaryStructure {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  currency    String   @default("USD")
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  components  SalaryStructureComponent[]
+  assignments SalaryStructureAssignment[]
+}
+
+model SalaryStructureComponent {
+  id                String          @id @default(cuid())
+  salaryStructureId String
+  salaryStructure   SalaryStructure @relation(fields: [salaryStructureId], references: [id], onDelete: Cascade)
+  salaryComponentId String
+  salaryComponent   SalaryComponent @relation(fields: [salaryComponentId], references: [id])
+  amount            Decimal         @default(0) @db.Decimal(18, 6)
+  formula           String?
+  idx               Int             @default(0)
+
+  @@unique([salaryStructureId, salaryComponentId])
+}
+
+model SalaryStructureAssignment {
+  id                String          @id @default(cuid())
+  employeeId        String
+  employee          Employee        @relation(fields: [employeeId], references: [id])
+  salaryStructureId String
+  salaryStructure   SalaryStructure @relation(fields: [salaryStructureId], references: [id])
+  baseSalary        Decimal         @default(0) @db.Decimal(18, 6)
+  fromDate          DateTime
+  toDate            DateTime?
+  isActive          Boolean         @default(true)
+  createdAt         DateTime        @default(now())
+
+  @@index([employeeId, isActive])
+}
+
+model PayrollEntry {
+  id          String             @id @default(cuid())
+  payrollNo   String             @unique
+  month       Int
+  year        Int
+  postingDate DateTime           @default(now())
+  status      PayrollEntryStatus @default(DRAFT)
+  totalGross  Decimal            @default(0) @db.Decimal(18, 6)
+  totalDeduction Decimal         @default(0) @db.Decimal(18, 6)
+  totalNet    Decimal            @default(0) @db.Decimal(18, 6)
+  notes       String?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  salarySlips SalarySlip[]
+
+  @@unique([month, year])
+}
+
+model SalarySlip {
+  id             String           @id @default(cuid())
+  slipNo         String           @unique
+  payrollEntryId String?
+  payrollEntry   PayrollEntry?    @relation(fields: [payrollEntryId], references: [id])
+  employeeId     String
+  employee       Employee         @relation(fields: [employeeId], references: [id])
+  month          Int
+  year           Int
+  status         SalarySlipStatus @default(DRAFT)
+  currency       String           @default("USD")
+  grossPay       Decimal          @default(0) @db.Decimal(18, 6)
+  totalDeduction Decimal          @default(0) @db.Decimal(18, 6)
+  netPay         Decimal          @default(0) @db.Decimal(18, 6)
+  paymentDate    DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  items SalarySlipItem[]
+
+  @@unique([employeeId, month, year])
+  @@index([payrollEntryId])
+}
+
+model SalarySlipItem {
+  id                String           @id @default(cuid())
+  salarySlipId      String
+  salarySlip        SalarySlip       @relation(fields: [salarySlipId], references: [id], onDelete: Cascade)
+  salaryComponentId String?
+  salaryComponent   SalaryComponent? @relation(fields: [salaryComponentId], references: [id])
+  type              SalaryComponentType
+  name              String
+  amount            Decimal          @default(0) @db.Decimal(18, 6)
+  idx               Int              @default(0)
+}
+
+model EmployeeLifecycleEvent {
+  id                  String               @id @default(cuid())
+  employeeId          String
+  employee            Employee             @relation(fields: [employeeId], references: [id])
+  type                LifecycleEventType
+  status              LifecycleEventStatus @default(DRAFT)
+  effectiveDate       DateTime
+  previousDepartmentId String?
+  newDepartmentId     String?
+  previousPositionId  String?
+  newPositionId       String?
+  previousSalary      Decimal?             @db.Decimal(18, 6)
+  newSalary           Decimal?             @db.Decimal(18, 6)
+  reason              String?
+  notes               String?
+  submittedAt         DateTime?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  @@index([employeeId, type, status])
 }
 
 // ===================== CRM =====================

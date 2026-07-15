@@ -7,29 +7,64 @@ import {
   getLeaveTypes, createLeaveType,
   getLeaveRequests, createLeaveRequest, approveLeaveRequest,
   getPayrolls, generatePayroll, updatePayrollStatus,
+  getMyHrProfile, updateMyHrProfile, getMyAttendance, createEmployeeCheckin,
+  getShiftTypes, createShiftType, assignShift,
+  getLeaveAllocations, createLeaveAllocation, getLeaveLedger, getLeavePolicies, createLeavePolicy,
+  getSalaryComponents, createSalaryComponent, getSalaryStructures, createSalaryStructure, assignSalaryStructure,
+  getPayrollEntries, generatePayrollEntry, updatePayrollEntryStatus,
+  getSalarySlips, getMySalarySlips, getSalarySlip,
+  getLifecycleEvents, createLifecycleEvent, updateLifecycleEventStatus,
+  getHrDashboard,
 } from '../controllers/hr.controller';
-import { authenticate } from '../middleware/auth';
+import { authenticate, authorize } from '../middleware/auth';
 
 const router = Router();
 router.use(authenticate);
 
-router.route('/employees').get(getEmployees).post(createEmployee);
-router.route('/employees/:id').get(getEmployee).put(updateEmployee).delete(deleteEmployee);
+const hrRoles = ['SUPER_ADMIN', 'ADMIN', 'HR_MANAGER', 'HR_OFFICER'];
+const payrollRoles = ['SUPER_ADMIN', 'ADMIN', 'HR_MANAGER', 'PAYROLL_OFFICER'];
+const managerRoles = ['SUPER_ADMIN', 'ADMIN', 'HR_MANAGER', 'HR_OFFICER', 'MANAGER'];
 
-router.route('/departments').get(getDepartments).post(createDepartment);
-router.route('/departments/:id').put(updateDepartment).delete(deleteDepartment);
+router.get('/dashboard', authorize(...hrRoles, 'PAYROLL_OFFICER', 'MANAGER', 'EMPLOYEE'), getHrDashboard);
 
-router.route('/positions').get(getPositions).post(createPosition);
-router.delete('/positions/:id', deletePosition);
+router.route('/me').get(getMyHrProfile).patch(updateMyHrProfile);
+router.get('/me/attendance', getMyAttendance);
+router.post('/me/checkins', createEmployeeCheckin);
+router.get('/me/salary-slips', getMySalarySlips);
 
-router.route('/attendance').get(getAttendance).post(markAttendance);
+router.route('/employees').get(authorize(...hrRoles, 'PAYROLL_OFFICER', 'MANAGER'), getEmployees).post(authorize(...hrRoles), createEmployee);
+router.route('/employees/:id').get(authorize(...hrRoles, 'PAYROLL_OFFICER', 'MANAGER'), getEmployee).put(authorize(...hrRoles), updateEmployee).delete(authorize(...hrRoles), deleteEmployee);
 
-router.route('/leave-types').get(getLeaveTypes).post(createLeaveType);
+router.route('/departments').get(getDepartments).post(authorize(...hrRoles), createDepartment);
+router.route('/departments/:id').put(authorize(...hrRoles), updateDepartment).delete(authorize(...hrRoles), deleteDepartment);
 
-router.route('/leave-requests').get(getLeaveRequests).post(createLeaveRequest);
-router.put('/leave-requests/:id/approve', approveLeaveRequest);
+router.route('/positions').get(getPositions).post(authorize(...hrRoles), createPosition);
+router.delete('/positions/:id', authorize(...hrRoles), deletePosition);
 
-router.route('/payroll').get(getPayrolls).post(generatePayroll);
-router.put('/payroll/:id/status', updatePayrollStatus);
+router.route('/attendance').get(authorize(...hrRoles, 'MANAGER'), getAttendance).post(authorize(...hrRoles), markAttendance);
+router.route('/shift-types').get(authorize(...hrRoles), getShiftTypes).post(authorize(...hrRoles), createShiftType);
+router.post('/shift-assignments', authorize(...hrRoles), assignShift);
+
+router.route('/leave-types').get(getLeaveTypes).post(authorize(...hrRoles), createLeaveType);
+router.route('/leave-policies').get(authorize(...hrRoles), getLeavePolicies).post(authorize(...hrRoles), createLeavePolicy);
+router.route('/leave-allocations').get(authorize(...hrRoles, 'MANAGER'), getLeaveAllocations).post(authorize(...hrRoles), createLeaveAllocation);
+router.get('/leave-ledger', authorize(...hrRoles, 'MANAGER'), getLeaveLedger);
+
+router.route('/leave-requests').get(authorize(...managerRoles, 'EMPLOYEE'), getLeaveRequests).post(createLeaveRequest);
+router.put('/leave-requests/:id/approve', authorize(...managerRoles), approveLeaveRequest);
+
+router.route('/payroll').get(authorize(...payrollRoles), getPayrolls).post(authorize(...payrollRoles), generatePayroll);
+router.put('/payroll/:id/status', authorize(...payrollRoles), updatePayrollStatus);
+
+router.route('/salary-components').get(authorize(...payrollRoles), getSalaryComponents).post(authorize(...payrollRoles), createSalaryComponent);
+router.route('/salary-structures').get(authorize(...payrollRoles), getSalaryStructures).post(authorize(...payrollRoles), createSalaryStructure);
+router.post('/salary-structure-assignments', authorize(...payrollRoles), assignSalaryStructure);
+router.route('/payroll-entries').get(authorize(...payrollRoles), getPayrollEntries).post(authorize(...payrollRoles), generatePayrollEntry);
+router.patch('/payroll-entries/:id/status', authorize(...payrollRoles), updatePayrollEntryStatus);
+router.get('/salary-slips', authorize(...payrollRoles), getSalarySlips);
+router.get('/salary-slips/:id', getSalarySlip);
+
+router.route('/lifecycle-events').get(authorize(...hrRoles), getLifecycleEvents).post(authorize(...hrRoles), createLifecycleEvent);
+router.patch('/lifecycle-events/:id/status', authorize(...hrRoles), updateLifecycleEventStatus);
 
 export default router;
