@@ -4,6 +4,7 @@ import prisma from '../lib/prisma';
 import { success, paginated, error } from '../utils/response';
 import { handlePrismaError } from '../utils/prismaError';
 import { generateEmployeeId } from '../utils/generate';
+import { ensureCompanyDefaultRoles } from '../utils/accessControl';
 
 // ---- EMPLOYEES ----
 export const getEmployees = async (req: Request, res: Response) => {
@@ -12,6 +13,7 @@ export const getEmployees = async (req: Request, res: Response) => {
     const limit = parseInt(req.query.limit as string) || 20;
     const { departmentId, status, search } = req.query as any;
     const where: any = {};
+    if ((req as any).user?.companyId) where.user = { companyId: (req as any).user.companyId };
     if (departmentId) where.departmentId = departmentId;
     if (status) where.status = status;
     if (search) where.OR = [
@@ -64,26 +66,42 @@ export const getEmployee = async (req: Request, res: Response) => {
 export const createEmployee = async (req: Request, res: Response) => {
   try {
     const {
-      email, password, firstName, lastName, phone, departmentId, positionId, managerId,
+      password, firstName, lastName, phone, departmentId, positionId, managerId,
       hireDate, salary, salaryType, address, city, country, emergencyName, emergencyPhone,
-      role, employmentType, branch, grade, gender, dateOfBirth, maritalStatus,
+      role, roleIds = [], employmentType, branch, grade, gender, dateOfBirth, maritalStatus,
       workLocation, personalEmail, companyEmail, noticePeriodDays, bankAccount, bankName, taxId,
     } = req.body;
+    const email = String(req.body.email || '').trim().toLowerCase();
+    if (!email) return error(res, 'Email is required', 400);
+    if (!firstName || !lastName) return error(res, 'First name and last name are required', 400);
 
     const existingUser = await prisma.user.findUnique({ where: { email } });
-    if (existingUser) return error(res, 'Email already registered', 400);
+    if (existingUser) return error(res, 'This email is already registered. Use a different email, or edit the existing user access instead of creating a new employee.', 400);
 
+    const companyId = (req as any).user?.companyId;
+    const requestedRoleIds = Array.isArray(roleIds) ? roleIds : [];
     const hashed = await bcrypt.hash(password || 'Employee@123', 10);
     const employeeId = await generateEmployeeId();
 
     const result = await prisma.$transaction(async (tx) => {
       const user = await tx.user.create({
-        data: { email, password: hashed, firstName, lastName, phone, role: role || 'EMPLOYEE' },
+        data: { email, password: hashed, firstName, lastName, phone, role: role || 'EMPLOYEE', companyId },
       });
+      let uniqueRoleIds = Array.from(new Set(requestedRoleIds.filter(Boolean)));
+      if (!uniqueRoleIds.length && companyId) {
+        const roles = await ensureCompanyDefaultRoles(companyId, tx);
+        if (roles.EMPLOYEE_SELF_SERVICE?.id) uniqueRoleIds = [roles.EMPLOYEE_SELF_SERVICE.id];
+      }
+      for (const accessRoleId of uniqueRoleIds) {
+        await tx.userAccessRole.create({ data: { userId: user.id, roleId: accessRoleId as string, assignedById: (req as any).user?.id } });
+      }
       const emp = await tx.employee.create({
         data: {
           employeeId, userId: user.id, departmentId, positionId, managerId,
-          hireDate: new Date(hireDate), salary, salaryType, address, city, country,
+          hireDate: hireDate ? new Date(hireDate) : new Date(),
+          salary: Number(salary || 0),
+          salaryType: salaryType || 'MONTHLY',
+          address, city, country,
           emergencyName, emergencyPhone, employmentType, branch, grade, gender,
           dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : undefined,
           maritalStatus, workLocation, personalEmail, companyEmail,
@@ -164,7 +182,10 @@ export const getDepartments = async (req: Request, res: Response) => {
 
 export const createDepartment = async (req: Request, res: Response) => {
   try {
-    const dept = await prisma.department.create({ data: req.body });
+    const name = String(req.body.name || '').trim();
+    const code = String(req.body.code || '').trim().toUpperCase();
+    if (!name || !code) return error(res, 'Department name and code are required', 400);
+    const dept = await prisma.department.create({ data: { ...req.body, name, code } });
     return success(res, dept, 'Department created', 201);
   } catch (err: any) {
     return handlePrismaError(res, err);
@@ -204,8 +225,46 @@ export const getPositions = async (req: Request, res: Response) => {
 
 export const createPosition = async (req: Request, res: Response) => {
   try {
-    const pos = await prisma.position.create({ data: req.body, include: { department: true } });
+    const title = String(req.body.title || '').trim();
+    const departmentId = String(req.body.departmentId || '').trim();
+    if (!title || !departmentId) return error(res, 'Position title and department are required', 400);
+    const department = await prisma.department.findUnique({ where: { id: departmentId } });
+    if (!department) return error(res, 'Department not found for this position', 404);
+    const pos = await prisma.position.create({
+      data: {
+        title,
+        departmentId,
+        description: req.body.description,
+        minSalary: req.body.minSalary === '' || req.body.minSalary == null ? undefined : Number(req.body.minSalary),
+        maxSalary: req.body.maxSalary === '' || req.body.maxSalary == null ? undefined : Number(req.body.maxSalary),
+      },
+      include: { department: true, _count: { select: { employees: true } } },
+    });
     return success(res, pos, 'Position created', 201);
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
+export const updatePosition = async (req: Request, res: Response) => {
+  try {
+    const data: any = {};
+    if (req.body.title !== undefined) data.title = String(req.body.title || '').trim();
+    if (req.body.departmentId !== undefined) data.departmentId = req.body.departmentId;
+    if (req.body.description !== undefined) data.description = req.body.description;
+    if (req.body.minSalary !== undefined) data.minSalary = req.body.minSalary === '' || req.body.minSalary == null ? null : Number(req.body.minSalary);
+    if (req.body.maxSalary !== undefined) data.maxSalary = req.body.maxSalary === '' || req.body.maxSalary == null ? null : Number(req.body.maxSalary);
+    if (!data.title && req.body.title !== undefined) return error(res, 'Position title is required', 400);
+    if (data.departmentId) {
+      const department = await prisma.department.findUnique({ where: { id: data.departmentId } });
+      if (!department) return error(res, 'Department not found for this position', 404);
+    }
+    const pos = await prisma.position.update({
+      where: { id: req.params.id },
+      data,
+      include: { department: true, _count: { select: { employees: true } } },
+    });
+    return success(res, pos, 'Position updated');
   } catch (err: any) {
     return handlePrismaError(res, err);
   }
@@ -213,6 +272,8 @@ export const createPosition = async (req: Request, res: Response) => {
 
 export const deletePosition = async (req: Request, res: Response) => {
   try {
+    const used = await prisma.employee.count({ where: { positionId: req.params.id } });
+    if (used > 0) return error(res, 'This position is assigned to employees. Reassign employees before deleting it.', 400);
     await prisma.position.delete({ where: { id: req.params.id } });
     return success(res, null, 'Position deleted');
   } catch (err: any) {

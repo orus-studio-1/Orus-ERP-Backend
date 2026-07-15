@@ -3,10 +3,11 @@ import {
   getPurchaseOrders, getPurchaseOrder, createPurchaseOrder, updatePurchaseOrderStatus, deletePurchaseOrder,
   getPurchaseInvoices, createPurchaseInvoice, updatePurchaseInvoiceStatus, deletePurchaseInvoice,
 } from '../controllers/procurement.controller';
-import { authenticate } from '../middleware/auth';
+import { authenticate, requireModuleAccess } from '../middleware/auth';
 
 const router = Router();
 router.use(authenticate);
+router.use(requireModuleAccess('procurement'));
 
 router.route('/purchase-orders').get(getPurchaseOrders).post(createPurchaseOrder);
 router.route('/purchase-orders/:id').get(getPurchaseOrder).delete(deletePurchaseOrder);

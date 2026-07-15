@@ -18,10 +18,11 @@ import {
 } from '../controllers/invoices.controller';
 import { getCustomerInvoices, getCustomerOutstanding as getCustomerOutstandingSummary } from '../controllers/customers.controller';
 import { searchProducts } from '../controllers/inventory.controller';
-import { authenticate } from '../middleware/auth';
+import { authenticate, requireModuleAccess } from '../middleware/auth';
 
 const router = Router();
 router.use(authenticate);
+router.use(requireModuleAccess('invoicing'));
 
 router.route('/sales-invoices').get(getSalesInvoices).post(createSalesInvoice);
 router.route('/sales-invoices/:id').get(getSalesInvoice).patch(updateSalesInvoice).delete(deleteSalesInvoice);

@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import { convertQuotationToOrder } from '../controllers/sales.controller';
-import { authenticate } from '../middleware/auth';
+import { authenticate, requireModuleAccess } from '../middleware/auth';
 
 const router = Router();
 router.use(authenticate);
+router.use(requireModuleAccess('sales', () => 'sales-orders'));
 
 router.post('/from-quotation/:id', convertQuotationToOrder);
 

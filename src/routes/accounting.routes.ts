@@ -5,10 +5,11 @@ import {
   getFiscalYears, createFiscalYear,
   getTrialBalance,
 } from '../controllers/accounting.controller';
-import { authenticate } from '../middleware/auth';
+import { authenticate, requireModuleAccess } from '../middleware/auth';
 
 const router = Router();
 router.use(authenticate);
+router.use(requireModuleAccess('accounting'));
 
 router.route('/accounts').get(getAccounts).post(createAccount);
 router.route('/accounts/:id').get(getAccount).put(updateAccount).delete(deleteAccount);

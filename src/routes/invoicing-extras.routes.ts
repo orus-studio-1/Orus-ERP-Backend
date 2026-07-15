@@ -19,10 +19,11 @@ import {
   updateTaxTemplate,
   runDueSubscriptions,
 } from '../controllers/invoicingExtras.controller';
-import { authenticate, authorize } from '../middleware/auth';
+import { authenticate, authorize, requireModuleAccess } from '../middleware/auth';
 
 const router = Router();
 router.use(authenticate);
+router.use(requireModuleAccess('invoicing'));
 
 router.route('/tax-templates').get(getTaxTemplates).post(createTaxTemplate);
 router.patch('/tax-templates/:id', updateTaxTemplate);

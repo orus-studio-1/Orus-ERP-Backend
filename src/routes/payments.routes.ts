@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import { createPayment, createPaymentEntry, deletePayment, getPayment, getPaymentEntries, getPaymentEntry, getPayments, updatePaymentEntryStatus } from '../controllers/invoices.controller';
-import { authenticate, authorize } from '../middleware/auth';
+import { authenticate, authorize, requireModuleAccess } from '../middleware/auth';
 
 const router = Router();
 router.use(authenticate);
+router.use(requireModuleAccess('invoicing', () => 'payments'));
 
 router.route('/entries').get(getPaymentEntries).post(authorize('SUPER_ADMIN', 'ADMIN', 'ACCOUNTANT', 'MANAGER'), createPaymentEntry);
 router.route('/entries/:id').get(getPaymentEntry);

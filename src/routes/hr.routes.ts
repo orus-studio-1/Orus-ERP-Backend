@@ -2,7 +2,7 @@ import { Router } from 'express';
 import {
   getEmployees, getEmployee, createEmployee, updateEmployee, deleteEmployee,
   getDepartments, createDepartment, updateDepartment, deleteDepartment,
-  getPositions, createPosition, deletePosition,
+  getPositions, createPosition, updatePosition, deletePosition,
   getAttendance, markAttendance,
   getLeaveTypes, createLeaveType,
   getLeaveRequests, createLeaveRequest, approveLeaveRequest,
@@ -16,7 +16,7 @@ import {
   getLifecycleEvents, createLifecycleEvent, updateLifecycleEventStatus,
   getHrDashboard,
 } from '../controllers/hr.controller';
-import { authenticate, authorize } from '../middleware/auth';
+import { authenticate, authorize, requireModuleAccess } from '../middleware/auth';
 
 const router = Router();
 router.use(authenticate);
@@ -32,6 +32,8 @@ router.get('/me/attendance', getMyAttendance);
 router.post('/me/checkins', createEmployeeCheckin);
 router.get('/me/salary-slips', getMySalarySlips);
 
+router.use(requireModuleAccess('hr'));
+
 router.route('/employees').get(authorize(...hrRoles, 'PAYROLL_OFFICER', 'MANAGER'), getEmployees).post(authorize(...hrRoles), createEmployee);
 router.route('/employees/:id').get(authorize(...hrRoles, 'PAYROLL_OFFICER', 'MANAGER'), getEmployee).put(authorize(...hrRoles), updateEmployee).delete(authorize(...hrRoles), deleteEmployee);
 
@@ -39,7 +41,7 @@ router.route('/departments').get(getDepartments).post(authorize(...hrRoles), cre
 router.route('/departments/:id').put(authorize(...hrRoles), updateDepartment).delete(authorize(...hrRoles), deleteDepartment);
 
 router.route('/positions').get(getPositions).post(authorize(...hrRoles), createPosition);
-router.delete('/positions/:id', authorize(...hrRoles), deletePosition);
+router.route('/positions/:id').put(authorize(...hrRoles), updatePosition).delete(authorize(...hrRoles), deletePosition);
 
 router.route('/attendance').get(authorize(...hrRoles, 'MANAGER'), getAttendance).post(authorize(...hrRoles), markAttendance);
 router.route('/shift-types').get(authorize(...hrRoles), getShiftTypes).post(authorize(...hrRoles), createShiftType);

@@ -5,10 +5,11 @@ import {
   getOpportunities, createOpportunity, updateOpportunity, deleteOpportunity,
   getActivities, createActivity, updateActivity, deleteActivity,
 } from '../controllers/crm.controller';
-import { authenticate } from '../middleware/auth';
+import { authenticate, requireModuleAccess } from '../middleware/auth';
 
 const router = Router();
 router.use(authenticate);
+router.use(requireModuleAccess('crm'));
 
 router.route('/leads').get(getLeads).post(createLead);
 router.route('/leads/:id').get(getLead).put(updateLead).delete(deleteLead);

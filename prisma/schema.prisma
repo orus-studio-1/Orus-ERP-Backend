@@ -16,11 +16,17 @@ model User {
   phone     String?
   avatar    String?
   role      UserRole @default(EMPLOYEE)
+  companyId String?
+  company   Company? @relation("CompanyUsers", fields: [companyId], references: [id])
+  ownedCompanies Company[] @relation("CompanyOwner")
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   employee      Employee?
+  accessRoles   UserAccessRole[]
+  permissionOverrides UserPermissionOverride[]
+  accessAuditLogs AccessAuditLog[] @relation("AccessAuditActor")
   createdLeads  Lead[]         @relation("LeadCreatedBy")
   assignedLeads Lead[]         @relation("LeadAssignedTo")
   activities    Activity[]
@@ -58,8 +64,137 @@ model Company {
   currency  String   @default("USD")
   logo      String?
   website   String?
+  ownerId   String?
+  owner     User?    @relation("CompanyOwner", fields: [ownerId], references: [id])
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  users     User[]   @relation("CompanyUsers")
+  accessRoles AccessRole[]
+  permissionOverrides UserPermissionOverride[]
+  accessAuditLogs AccessAuditLog[]
+}
+
+enum PermissionAction {
+  READ
+  CREATE
+  WRITE
+  DELETE
+  SUBMIT
+  CANCEL
+  AMEND
+  APPROVE
+  EXPORT
+  IMPORT
+  PRINT
+  REPORT
+  MANAGE
+}
+
+enum AccessEffect {
+  ALLOW
+  DENY
+}
+
+model Permission {
+  id          String           @id @default(cuid())
+  key         String           @unique
+  module      String
+  resource    String
+  action      PermissionAction
+  label       String
+  description String?
+  isSystem    Boolean          @default(true)
+  createdAt   DateTime         @default(now())
+
+  rolePermissions RolePermission[]
+  userOverrides   UserPermissionOverride[]
+
+  @@unique([module, resource, action])
+  @@index([module, action])
+}
+
+model AccessRole {
+  id          String   @id @default(cuid())
+  companyId   String?
+  company     Company? @relation(fields: [companyId], references: [id])
+  name        String
+  title       String?
+  description String?
+  isSystem    Boolean  @default(false)
+  isSuperAdmin Boolean @default(false)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users       UserAccessRole[]
+  permissions RolePermission[]
+
+  @@unique([companyId, name])
+  @@index([companyId, isActive])
+}
+
+model UserAccessRole {
+  id        String     @id @default(cuid())
+  userId    String
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roleId    String
+  role      AccessRole @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  assignedById String?
+  assignedAt DateTime   @default(now())
+
+  @@unique([userId, roleId])
+  @@index([userId])
+}
+
+model RolePermission {
+  id           String       @id @default(cuid())
+  roleId       String
+  role         AccessRole   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permissionId String
+  permission   Permission   @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  effect       AccessEffect @default(ALLOW)
+  conditions   Json?
+  createdAt    DateTime     @default(now())
+
+  @@unique([roleId, permissionId])
+  @@index([permissionId, effect])
+}
+
+model UserPermissionOverride {
+  id           String       @id @default(cuid())
+  companyId    String?
+  company      Company?     @relation(fields: [companyId], references: [id])
+  userId       String
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permissionId String
+  permission   Permission   @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  effect       AccessEffect
+  reason       String?
+  expiresAt    DateTime?
+  createdAt    DateTime     @default(now())
+
+  @@unique([userId, permissionId])
+  @@index([companyId, userId, effect])
+}
+
+model AccessAuditLog {
+  id          String   @id @default(cuid())
+  companyId   String?
+  company     Company? @relation(fields: [companyId], references: [id])
+  actorId     String?
+  actor       User?    @relation("AccessAuditActor", fields: [actorId], references: [id])
+  targetUserId String?
+  targetRoleId String?
+  action      String
+  message     String?
+  before      Json?
+  after       Json?
+  createdAt   DateTime @default(now())
+
+  @@index([companyId, createdAt])
+  @@index([targetUserId, createdAt])
+  @@index([targetRoleId, createdAt])
 }
 
 // ===================== ACCOUNTING =====================

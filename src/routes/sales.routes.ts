@@ -4,10 +4,11 @@ import {
   getSalesOrders, getSalesOrder, createSalesOrder, updateSalesOrderStatus, deleteSalesOrder,
   updateQuotationStatus,updateSalesOrder
 } from '../controllers/sales.controller';
-import { authenticate } from '../middleware/auth';
+import { authenticate, requireModuleAccess } from '../middleware/auth';
 
 const router = Router();
 router.use(authenticate);
+router.use(requireModuleAccess('sales'));
 
 router.route('/quotations').get(getQuotations).post(createQuotation);
 router.route('/quotations/:id').get(getQuotation).put(updateQuotation).delete(deleteQuotation);

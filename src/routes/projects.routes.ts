@@ -6,10 +6,11 @@ import {
   getMilestones, createMilestone, updateMilestone, deleteMilestone,
   getComments, createComment, deleteComment,
 } from '../controllers/projects.controller';
-import { authenticate } from '../middleware/auth';
+import { authenticate, requireModuleAccess } from '../middleware/auth';
 
 const router = Router();
 router.use(authenticate);
+router.use(requireModuleAccess('projects'));
 
 router.route('/').get(getProjects).post(createProject);
 router.route('/:id').get(getProject).put(updateProject).delete(deleteProject);

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { register, login, getMe, updateProfile, changePassword, getUsers } from '../controllers/auth.controller';
-import { authenticate } from '../middleware/auth';
+import { authenticate, requirePermission } from '../middleware/auth';
 
 const router = Router();
 
@@ -9,6 +9,6 @@ router.post('/login', login);
 router.get('/me', authenticate, getMe);
 router.put('/profile', authenticate, updateProfile);
 router.put('/change-password', authenticate, changePassword);
-router.get('/users', authenticate, getUsers);
+router.get('/users', authenticate, requirePermission('access', 'users', 'READ'), getUsers);
 
 export default router;

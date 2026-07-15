@@ -24,6 +24,7 @@ import projectsRoutes from './routes/projects.routes';
 import customersRoutes from './routes/customers.routes';
 import suppliersRoutes from './routes/suppliers.routes';
 import dashboardRoutes from './routes/dashboard.routes';
+import accessRoutes from './routes/access.routes';
 import { runDueSubscriptionsJob } from './controllers/invoicingExtras.controller';
 
 const app = express();
@@ -38,6 +39,7 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 app.use('/api/auth', authRoutes);
+app.use('/api/access', accessRoutes);
 app.use('/api/accounting', accountingRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/hr', hrRoutes);

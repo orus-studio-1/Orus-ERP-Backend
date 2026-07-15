@@ -6,10 +6,11 @@ import {
   getStockMovements, createStockMovement,
   getUnits, createUnit, deleteUnit,
 } from '../controllers/inventory.controller';
-import { authenticate } from '../middleware/auth';
+import { authenticate, requireModuleAccess } from '../middleware/auth';
 
 const router = Router();
 router.use(authenticate);
+router.use(requireModuleAccess('inventory'));
 
 router.route('/products').get(getProducts).post(createProduct);
 router.route('/products/:id').get(getProduct).put(updateProduct).delete(deleteProduct);
