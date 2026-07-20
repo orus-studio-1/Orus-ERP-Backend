@@ -107,8 +107,8 @@ export const updateProduct = async (req: Request, res: Response) => {
 
 export const deleteProduct = async (req: Request, res: Response) => {
   try {
-    await prisma.product.delete({ where: { id: req.params.id } });
-    return success(res, null, 'Product deleted');
+    const product = await prisma.product.update({ where: { id: req.params.id }, data: { isActive: false } });
+    return success(res, product, 'Product deactivated');
   } catch (err: any) {
     return handlePrismaError(res, err);
   }

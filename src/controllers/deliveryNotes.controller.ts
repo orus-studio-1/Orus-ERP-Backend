@@ -5,6 +5,8 @@ import { success, paginated, error } from '../utils/response';
 import { handlePrismaError } from '../utils/prismaError';
 import { audit, postStockOut } from '../utils/erp';
 import { serializeMoney } from '../utils/invoice';
+import { fulfillSalesOrderReservation } from '../services/inventory/reservation.service';
+import { refreshSalesOrderProgress } from '../services/sales/salesOrder.service';
 
 async function nextDeliveryNo(tx: any) {
   let series = await tx.numberingSeries.findFirst({ where: { documentType: 'DELIVERY_NOTE', isActive: true, isDefault: true } });
@@ -144,6 +146,17 @@ export const updateDeliveryNoteStatus = async (req: Request, res: Response) => {
       if (status === 'SUBMITTED') {
         if (existing.status !== 'DRAFT') throw new Error('Only draft delivery notes can be submitted');
         await postStockOut(tx, existing.items, existing.deliveryNo, 'Stock issued from delivery note', existing.warehouseId || undefined);
+        const warehouseId = existing.warehouseId || (await tx.warehouse.findFirst({ where: { isActive: true }, orderBy: { createdAt: 'asc' } }))?.id;
+        if (existing.salesOrderId && warehouseId) {
+          for (const item of existing.items) {
+            await fulfillSalesOrderReservation(tx, existing.salesOrderId, item.productId, warehouseId, item.quantity);
+            await tx.salesOrderItem.updateMany({
+              where: { salesOrderId: existing.salesOrderId, productId: item.productId },
+              data: { deliveredQty: { increment: item.quantity } },
+            });
+          }
+          await refreshSalesOrderProgress(tx, existing.salesOrderId);
+        }
         const submitted = await tx.deliveryNote.update({ where: { id: existing.id }, data: { status: 'SUBMITTED', submittedAt: new Date(), postingDate: existing.postingDate || new Date() }, include: deliveryInclude });
         await audit(tx, req, { entityType: 'DELIVERY_NOTE', entityId: submitted.id, deliveryNoteId: submitted.id, action: 'SUBMIT', statusBefore: existing.status, statusAfter: 'SUBMITTED', message: `Submitted ${submitted.deliveryNo}` });
         return submitted;
@@ -151,6 +164,15 @@ export const updateDeliveryNoteStatus = async (req: Request, res: Response) => {
       if (status === 'CANCELLED') {
         if (existing.status !== 'SUBMITTED') throw new Error('Only submitted delivery notes can be cancelled');
         await postStockOut(tx, existing.items, existing.deliveryNo, 'Stock returned from cancelled delivery note', existing.warehouseId || undefined, true);
+        if (existing.salesOrderId) {
+          for (const item of existing.items) {
+            await tx.salesOrderItem.updateMany({
+              where: { salesOrderId: existing.salesOrderId, productId: item.productId },
+              data: { deliveredQty: { decrement: item.quantity } },
+            });
+          }
+          await refreshSalesOrderProgress(tx, existing.salesOrderId);
+        }
         const cancelled = await tx.deliveryNote.update({ where: { id: existing.id }, data: { status: 'CANCELLED', cancelledAt: new Date() }, include: deliveryInclude });
         await audit(tx, req, { entityType: 'DELIVERY_NOTE', entityId: cancelled.id, deliveryNoteId: cancelled.id, action: 'CANCEL', statusBefore: existing.status, statusAfter: 'CANCELLED', message: `Cancelled ${cancelled.deliveryNo}` });
         return cancelled;

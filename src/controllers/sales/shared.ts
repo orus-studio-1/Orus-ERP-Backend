@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
+import { resolveItemPricing } from '../../services/inventory/pricing.service';
 
-export async function normalizeSalesItems(tx: any, items: any[] = []) {
+export async function normalizeSalesItems(tx: any, items: any[] = [], context: { customerId?: string; priceListId?: string; currency?: string } = {}) {
   const normalized = [];
   let subtotal = new Prisma.Decimal(0);
   let taxAmount = new Prisma.Decimal(0);
@@ -25,8 +26,17 @@ export async function normalizeSalesItems(tx: any, items: any[] = []) {
     }
 
     const quantity = new Prisma.Decimal(item.quantity || 0);
-    const unitPrice = new Prisma.Decimal(item.unitPrice ?? item.rate ?? product.salePrice ?? 0);
-    const discount = new Prisma.Decimal(item.discount || 0);
+    const pricing = await resolveItemPricing(tx, {
+      product,
+      customerId: context.customerId,
+      priceListId: context.priceListId,
+      currency: context.currency,
+      quantity,
+      explicitRate: item.unitPrice ?? item.rate,
+      explicitDiscount: item.discount,
+    });
+    const unitPrice = pricing.rate;
+    const discount = pricing.discount;
     const taxRate = new Prisma.Decimal(item.taxRate ?? product.taxRate ?? 0);
     const net = quantity.mul(unitPrice).mul(new Prisma.Decimal(1).minus(discount.div(100)));
     const lineTax = net.mul(taxRate.div(100));

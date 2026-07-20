@@ -71,7 +71,7 @@ export const createInvoiceFromSalesOrder = async (req: Request, res: Response) =
         discount: item.discount,
       }));
       const totals = calculateInvoiceTotals(sourceItems, order.discount);
-      return tx.salesInvoice.create({
+      const created = await tx.salesInvoice.create({
         data: {
           invoiceNo,
           customerId: order.customerId,
@@ -93,6 +93,7 @@ export const createInvoiceFromSalesOrder = async (req: Request, res: Response) =
         },
         include: invoiceInclude,
       });
+      return created;
     });
     return success(res, invoiceResponse(invoice), 'Invoice created from sales order', 201);
   } catch (err: any) {

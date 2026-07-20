@@ -34,6 +34,10 @@ model User {
   createdTasks  Task[]         @relation("TaskCreator")
   comments      Comment[]
   notifications Notification[]
+  crmOrganizations CrmOrganization[] @relation("CrmOrganizationOwner")
+  leadImportBatches LeadImportBatch[] @relation("LeadImportBy")
+  crmSavedViews CrmSavedView[]
+  crmAssignmentRules CrmAssignmentRule[] @relation("CrmAssignmentRuleAssignee")
 }
 
 enum UserRole {
@@ -73,6 +77,10 @@ model Company {
   accessRoles AccessRole[]
   permissionOverrides UserPermissionOverride[]
   accessAuditLogs AccessAuditLog[]
+  crmOrganizations CrmOrganization[]
+  leadImportBatches LeadImportBatch[]
+  crmSavedViews CrmSavedView[]
+  crmAssignmentRules CrmAssignmentRule[]
 }
 
 enum PermissionAction {
@@ -282,6 +290,7 @@ enum DocumentType {
   SALES_INVOICE
   PAYMENT_ENTRY
   CREDIT_NOTE
+  STOCK_ENTRY
   PURCHASE_ORDER
   PURCHASE_INVOICE
   EMPLOYEE
@@ -492,6 +501,15 @@ model Product {
   taxRate              Decimal      @default(0) @db.Decimal(9, 4)
   minStockLevel        Decimal      @default(0) @db.Decimal(18, 6)
   maxStockLevel        Decimal?     @db.Decimal(18, 6)
+  valuationMethod      ValuationMethod @default(MOVING_AVERAGE)
+  maintainStock        Boolean      @default(true)
+  allowNegativeStock   Boolean      @default(false)
+  hasBatchNo           Boolean      @default(false)
+  hasSerialNo          Boolean      @default(false)
+  reorderLevel         Decimal      @default(0) @db.Decimal(18, 6)
+  reorderQty           Decimal      @default(0) @db.Decimal(18, 6)
+  brand                String?
+  manufacturer         String?
   isActive             Boolean      @default(true)
   image                String?
   barcode              String?
@@ -500,6 +518,11 @@ model Product {
   taxCode              String?
   defaultTaxTemplateId String?
   defaultTaxTemplate   TaxTemplate? @relation("ProductDefaultTaxTemplate", fields: [defaultTaxTemplateId], references: [id])
+  defaultWarehouseId   String?
+  isVariant            Boolean      @default(false)
+  variantOfId          String?
+  variantOf            Product?     @relation("ProductVariants", fields: [variantOfId], references: [id])
+  variants             Product[]    @relation("ProductVariants")
   createdAt            DateTime     @default(now())
   updatedAt            DateTime     @updatedAt
 
@@ -513,6 +536,19 @@ model Product {
   quotationItems       QuotationItem[]
   creditNoteItems      CreditNoteItem[]
   subscriptionItems    SubscriptionTemplateItem[]
+  opportunityItems     OpportunityItem[]
+  stockLedgerEntries   StockLedgerEntry[]
+  valuationLayers      InventoryValuationLayer[]
+  stockReservations    StockReservation[]
+  stockEntryItems      StockEntryItem[]
+  batches              Batch[]
+  serialNumbers        SerialNumber[]
+  itemPrices           ItemPrice[]
+  uomConversions       ProductUomConversion[]
+  attributeValues      ProductAttributeValue[]
+
+  @@index([variantOfId])
+  @@index([defaultWarehouseId])
 }
 
 enum ProductType {
@@ -521,13 +557,25 @@ enum ProductType {
   DIGITAL
 }
 
+enum ValuationMethod {
+  FIFO
+  MOVING_AVERAGE
+  STANDARD
+}
+
 model Warehouse {
   id        String   @id @default(cuid())
   name      String
   code      String   @unique
+  parentId  String?
+  parent    Warehouse? @relation("WarehouseTree", fields: [parentId], references: [id])
+  children  Warehouse[] @relation("WarehouseTree")
+  type      WarehouseType @default(WAREHOUSE)
+  companyId String?
   address   String?
   city      String?
   country   String?
+  isDefault Boolean  @default(false)
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -535,6 +583,25 @@ model Warehouse {
   stockLevels StockLevel[]
   movements   StockMovement[]
   deliveryNotes DeliveryNote[]
+  stockLedgerEntries StockLedgerEntry[]
+  valuationLayers InventoryValuationLayer[]
+  stockReservations StockReservation[]
+  stockEntriesFrom StockEntry[] @relation("StockEntryFromWarehouse")
+  stockEntriesTo StockEntry[] @relation("StockEntryToWarehouse")
+  stockEntryItems StockEntryItem[]
+  batches Batch[]
+  serialNumbers SerialNumber[]
+
+  @@index([parentId])
+  @@index([companyId])
+}
+
+enum WarehouseType {
+  COMPANY
+  BRANCH
+  ROOM
+  BIN
+  WAREHOUSE
 }
 
 model StockLevel {
@@ -562,6 +629,269 @@ model StockMovement {
   reference   String?
   notes       String?
   createdAt   DateTime     @default(now())
+}
+
+model StockLedgerEntry {
+  id                   String    @id @default(cuid())
+  productId             String
+  product               Product   @relation(fields: [productId], references: [id])
+  warehouseId           String
+  warehouse             Warehouse @relation(fields: [warehouseId], references: [id])
+  postingDate           DateTime  @default(now())
+  voucherType           String
+  voucherId             String?
+  voucherNo             String
+  actualQty             Decimal   @db.Decimal(18, 6)
+  qtyAfterTransaction   Decimal   @db.Decimal(18, 6)
+  incomingRate          Decimal?  @db.Decimal(18, 6)
+  outgoingRate          Decimal?  @db.Decimal(18, 6)
+  valuationRate         Decimal   @default(0) @db.Decimal(18, 6)
+  stockValue            Decimal   @default(0) @db.Decimal(18, 6)
+  stockValueDifference  Decimal   @default(0) @db.Decimal(18, 6)
+  batchId               String?
+  batch                 Batch?    @relation(fields: [batchId], references: [id])
+  serialNoId            String?
+  serialNo              SerialNumber? @relation(fields: [serialNoId], references: [id])
+  isCancelled           Boolean   @default(false)
+  remarks               String?
+  createdAt             DateTime  @default(now())
+
+  @@index([productId, warehouseId, postingDate])
+  @@index([voucherType, voucherId])
+  @@index([batchId])
+  @@index([serialNoId])
+}
+
+model InventoryValuationLayer {
+  id                    String    @id @default(cuid())
+  productId              String
+  product                Product   @relation(fields: [productId], references: [id])
+  warehouseId            String
+  warehouse              Warehouse @relation(fields: [warehouseId], references: [id])
+  sourceLedgerEntryId    String?
+  postingDate            DateTime  @default(now())
+  originalQty            Decimal   @db.Decimal(18, 6)
+  remainingQty           Decimal   @db.Decimal(18, 6)
+  rate                   Decimal   @db.Decimal(18, 6)
+  isClosed               Boolean   @default(false)
+  createdAt              DateTime  @default(now())
+
+  @@index([productId, warehouseId, isClosed, postingDate])
+}
+
+model StockReservation {
+  id               String                 @id @default(cuid())
+  productId         String
+  product           Product                @relation(fields: [productId], references: [id])
+  warehouseId       String
+  warehouse         Warehouse              @relation(fields: [warehouseId], references: [id])
+  salesOrderId      String
+  salesOrder        SalesOrder             @relation(fields: [salesOrderId], references: [id])
+  salesOrderItemId  String
+  salesOrderItem    SalesOrderItem         @relation(fields: [salesOrderItemId], references: [id])
+  reservedQty       Decimal                @db.Decimal(18, 6)
+  fulfilledQty      Decimal                @default(0) @db.Decimal(18, 6)
+  status            StockReservationStatus @default(ACTIVE)
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+
+  @@index([productId, warehouseId, status])
+  @@index([salesOrderId])
+  @@index([salesOrderItemId])
+}
+
+enum StockReservationStatus {
+  ACTIVE
+  PARTIAL
+  FULFILLED
+  RELEASED
+}
+
+model StockEntry {
+  id                String            @id @default(cuid())
+  entryNo           String            @unique
+  purpose           StockEntryPurpose
+  status            DocumentStatus    @default(DRAFT)
+  postingDate       DateTime          @default(now())
+  fromWarehouseId   String?
+  fromWarehouse     Warehouse?        @relation("StockEntryFromWarehouse", fields: [fromWarehouseId], references: [id])
+  toWarehouseId     String?
+  toWarehouse       Warehouse?        @relation("StockEntryToWarehouse", fields: [toWarehouseId], references: [id])
+  remarks           String?
+  submittedAt       DateTime?
+  cancelledAt       DateTime?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  items StockEntryItem[]
+
+  @@index([status, purpose])
+  @@index([postingDate])
+}
+
+model StockEntryItem {
+  id                String      @id @default(cuid())
+  stockEntryId      String
+  stockEntry        StockEntry  @relation(fields: [stockEntryId], references: [id], onDelete: Cascade)
+  productId         String
+  product           Product     @relation(fields: [productId], references: [id])
+  warehouseId       String?
+  warehouse         Warehouse?  @relation(fields: [warehouseId], references: [id])
+  quantity          Decimal     @db.Decimal(18, 6)
+  valuationRate     Decimal     @default(0) @db.Decimal(18, 6)
+  batchId           String?
+  serialNoId        String?
+  remarks           String?
+  createdAt         DateTime    @default(now())
+
+  @@index([stockEntryId])
+  @@index([productId])
+}
+
+enum StockEntryPurpose {
+  MATERIAL_RECEIPT
+  MATERIAL_ISSUE
+  MATERIAL_TRANSFER
+  STOCK_RECONCILIATION
+  OPENING_STOCK
+  REPACK
+}
+
+model Batch {
+  id             String    @id @default(cuid())
+  batchNo        String    @unique
+  productId      String
+  product        Product   @relation(fields: [productId], references: [id])
+  warehouseId    String?
+  warehouse      Warehouse? @relation(fields: [warehouseId], references: [id])
+  expiryDate     DateTime?
+  manufacturingDate DateTime?
+  quantity       Decimal   @default(0) @db.Decimal(18, 6)
+  isActive       Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  ledgerEntries StockLedgerEntry[]
+
+  @@index([productId, warehouseId])
+  @@index([expiryDate])
+}
+
+model SerialNumber {
+  id             String    @id @default(cuid())
+  serialNo       String    @unique
+  productId      String
+  product        Product   @relation(fields: [productId], references: [id])
+  warehouseId    String?
+  warehouse      Warehouse? @relation(fields: [warehouseId], references: [id])
+  status         SerialNumberStatus @default(AVAILABLE)
+  batchId        String?
+  purchaseRate   Decimal?  @db.Decimal(18, 6)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  ledgerEntries StockLedgerEntry[]
+
+  @@index([productId, status])
+  @@index([warehouseId])
+}
+
+enum SerialNumberStatus {
+  AVAILABLE
+  DELIVERED
+  RESERVED
+  SCRAPPED
+}
+
+model PriceList {
+  id          String      @id @default(cuid())
+  name        String      @unique
+  currency    String      @default("USD")
+  selling     Boolean     @default(true)
+  buying      Boolean     @default(false)
+  isActive    Boolean     @default(true)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  itemPrices ItemPrice[]
+  pricingRules PricingRule[]
+}
+
+model ItemPrice {
+  id          String    @id @default(cuid())
+  productId   String
+  product     Product   @relation(fields: [productId], references: [id])
+  priceListId String
+  priceList   PriceList @relation(fields: [priceListId], references: [id])
+  unitId      String?
+  customerId  String?
+  currency    String    @default("USD")
+  price       Decimal   @db.Decimal(18, 6)
+  validFrom   DateTime?
+  validTo     DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([productId, priceListId, customerId])
+}
+
+model PricingRule {
+  id             String      @id @default(cuid())
+  name           String
+  priceListId    String?
+  priceList      PriceList?  @relation(fields: [priceListId], references: [id])
+  productId      String?
+  categoryId     String?
+  customerId     String?
+  minQty         Decimal?    @db.Decimal(18, 6)
+  maxQty         Decimal?    @db.Decimal(18, 6)
+  discountPercent Decimal    @default(0) @db.Decimal(9, 4)
+  marginPercent  Decimal     @default(0) @db.Decimal(9, 4)
+  priority       Int         @default(100)
+  isActive       Boolean     @default(true)
+  validFrom      DateTime?
+  validTo        DateTime?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@index([isActive, priority])
+  @@index([productId])
+  @@index([categoryId])
+  @@index([customerId])
+}
+
+model ProductUomConversion {
+  id          String   @id @default(cuid())
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id])
+  fromUnitId  String
+  toUnitId    String
+  factor      Decimal  @db.Decimal(18, 6)
+  createdAt   DateTime @default(now())
+
+  @@unique([productId, fromUnitId, toUnitId])
+}
+
+model ProductAttribute {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  values ProductAttributeValue[]
+}
+
+model ProductAttributeValue {
+  id          String           @id @default(cuid())
+  attributeId String
+  attribute   ProductAttribute @relation(fields: [attributeId], references: [id], onDelete: Cascade)
+  productId   String?
+  product     Product?         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  value       String
+  createdAt   DateTime         @default(now())
+
+  @@index([attributeId])
+  @@index([productId])
 }
 
 enum MovementType {
@@ -1056,28 +1386,99 @@ model EmployeeLifecycleEvent {
 }
 
 // ===================== CRM =====================
+model CrmOrganization {
+  id          String   @id @default(cuid())
+  companyId   String?
+  company     Company? @relation(fields: [companyId], references: [id])
+  name        String
+  industry    String?
+  website     String?
+  email       String?
+  phone       String?
+  address     String?
+  city        String?
+  state       String?
+  country     String?
+  zip         String?
+  ownerId     String?
+  owner       User?    @relation("CrmOrganizationOwner", fields: [ownerId], references: [id])
+  notes       String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  leads         Lead[]
+  contacts      Contact[]
+  opportunities Opportunity[]
+  activities    Activity[]
+
+  @@index([companyId, name])
+  @@index([ownerId])
+}
+
 model Lead {
-  id           String     @id @default(cuid())
-  title        String
-  firstName    String
-  lastName     String
-  email        String?
-  phone        String?
-  company      String?
-  source       LeadSource @default(OTHER)
-  status       LeadStatus @default(NEW)
-  priority     Priority   @default(MEDIUM)
-  value        Float?
-  notes        String?
-  createdById  String
-  createdBy    User       @relation("LeadCreatedBy", fields: [createdById], references: [id])
-  assignedToId String?
-  assignedTo   User?      @relation("LeadAssignedTo", fields: [assignedToId], references: [id])
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
+  id             String     @id @default(cuid())
+  title          String
+  firstName      String
+  lastName       String
+  email          String?
+  phone          String?
+  company        String?
+  city           String?
+  country        String?
+  organizationId String?
+  organization   CrmOrganization? @relation(fields: [organizationId], references: [id])
+  source         LeadSource @default(OTHER)
+  status         LeadStatus @default(NEW)
+  priority       Priority   @default(MEDIUM)
+  value          Float?
+  score          Int        @default(0)
+  tags           String[]   @default([])
+  lostReason     String?
+  notes          String?
+  createdById    String
+  createdBy      User       @relation("LeadCreatedBy", fields: [createdById], references: [id])
+  assignedToId   String?
+  assignedTo     User?      @relation("LeadAssignedTo", fields: [assignedToId], references: [id])
+  importBatchId  String?
+  importBatch    LeadImportBatch? @relation(fields: [importBatchId], references: [id])
+  importRowNo    Int?
+  lastContactedAt DateTime?
+  qualifiedAt    DateTime?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
 
   activities  Activity[]
+  contacts    Contact[]
   opportunity Opportunity?
+
+  @@index([status, source])
+  @@index([assignedToId, status])
+  @@index([email])
+  @@index([phone])
+  @@index([organizationId])
+  @@index([importBatchId])
+}
+
+model CrmAssignmentRule {
+  id          String     @id @default(cuid())
+  companyId   String?
+  company     Company?   @relation(fields: [companyId], references: [id])
+  name        String
+  isActive    Boolean    @default(true)
+  priority    Int        @default(100)
+  source      LeadSource?
+  city        String?
+  country     String?
+  minValue    Float?
+  maxValue    Float?
+  assignToId  String
+  assignTo    User       @relation("CrmAssignmentRuleAssignee", fields: [assignToId], references: [id])
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([companyId, isActive, priority])
+  @@index([assignToId])
 }
 
 enum LeadSource {
@@ -1087,6 +1488,7 @@ enum LeadSource {
   EMAIL
   PHONE
   ADVERTISEMENT
+  CSV_IMPORT
   OTHER
 }
 
@@ -1105,45 +1507,130 @@ enum Priority {
   URGENT
 }
 
-model Contact {
-  id        String   @id @default(cuid())
-  firstName String
-  lastName  String
-  email     String?
-  phone     String?
-  mobile    String?
-  company   String?
-  position  String?
-  address   String?
-  city      String?
-  country   String?
-  notes     String?
-  isActive  Boolean  @default(true)
+model LeadImportBatch {
+  id          String           @id @default(cuid())
+  companyId   String?
+  company     Company?         @relation(fields: [companyId], references: [id])
+  fileName    String
+  status      LeadImportStatus @default(PENDING)
+  totalRows   Int              @default(0)
+  createdRows Int              @default(0)
+  skippedRows Int              @default(0)
+  failedRows  Int              @default(0)
+  duplicateRows Int            @default(0)
+  importedById String
+  importedBy   User            @relation("LeadImportBy", fields: [importedById], references: [id])
+  startedAt    DateTime        @default(now())
+  completedAt  DateTime?
+  errorSummary String?
+  createdAt    DateTime        @default(now())
+
+  rows  LeadImportRow[]
+  leads Lead[]
+
+  @@index([companyId, createdAt])
+  @@index([importedById, createdAt])
+}
+
+enum LeadImportStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model LeadImportRow {
+  id        String              @id @default(cuid())
+  batchId   String
+  batch     LeadImportBatch     @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  rowNo     Int
+  status    LeadImportRowStatus
+  rawData   Json
+  normalizedData Json?
+  leadId    String?
+  error     String?
+  duplicateLeadId String?
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+
+  @@unique([batchId, rowNo])
+  @@index([batchId, status])
+}
+
+enum LeadImportRowStatus {
+  CREATED
+  SKIPPED
+  FAILED
+  DUPLICATE
+}
+
+model Contact {
+  id             String   @id @default(cuid())
+  firstName      String
+  lastName       String
+  email          String?
+  phone          String?
+  mobile         String?
+  company        String?
+  leadId         String?
+  lead           Lead?    @relation(fields: [leadId], references: [id])
+  organizationId String?
+  organization   CrmOrganization? @relation(fields: [organizationId], references: [id])
+  position       String?
+  address        String?
+  city           String?
+  country        String?
+  notes          String?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   activities    Activity[]
   opportunities Opportunity[]
   customers     Customer[]
+
+  @@index([email])
+  @@index([phone])
+  @@index([leadId])
+  @@index([organizationId])
 }
 
 model Opportunity {
-  id            String           @id @default(cuid())
-  title         String
-  leadId        String?          @unique
-  lead          Lead?            @relation(fields: [leadId], references: [id])
-  contactId     String?
-  contact       Contact?         @relation(fields: [contactId], references: [id])
-  value         Float
-  currency      String           @default("USD")
-  stage         OpportunityStage @default(PROSPECTING)
-  probability   Int              @default(0)
-  expectedClose DateTime?
-  notes         String?
-  createdAt     DateTime         @default(now())
-  updatedAt     DateTime         @updatedAt
+  id             String           @id @default(cuid())
+  title          String
+  leadId         String?          @unique
+  lead           Lead?            @relation(fields: [leadId], references: [id])
+  contactId      String?
+  contact        Contact?         @relation(fields: [contactId], references: [id])
+  organizationId String?
+  organization   CrmOrganization? @relation(fields: [organizationId], references: [id])
+  customerId      String?
+  customer        Customer?        @relation(fields: [customerId], references: [id])
+  quotationId     String?
+  quotation       Quotation?       @relation("OpportunityQuotation", fields: [quotationId], references: [id])
+  salesOrderId    String?
+  salesOrder      SalesOrder?      @relation("OpportunitySalesOrder", fields: [salesOrderId], references: [id])
+  value          Float
+  currency       String           @default("USD")
+  stage          OpportunityStage @default(PROSPECTING)
+  probability    Int              @default(0)
+  expectedClose  DateTime?
+  lostReason     String?
+  erpSyncStatus  CrmSyncStatus    @default(NOT_SYNCED)
+  erpSyncError    String?
+  wonAt          DateTime?
+  lostAt         DateTime?
+  notes          String?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
 
   activities Activity[]
+  items      OpportunityItem[]
+
+  @@index([stage, expectedClose])
+  @@index([organizationId])
+  @@index([customerId])
+  @@index([quotationId])
+  @@index([salesOrderId])
 }
 
 enum OpportunityStage {
@@ -1155,6 +1642,33 @@ enum OpportunityStage {
   CLOSED_LOST
 }
 
+enum CrmSyncStatus {
+  NOT_SYNCED
+  QUEUED
+  SYNCED
+  FAILED
+}
+
+model OpportunityItem {
+  id            String      @id @default(cuid())
+  opportunityId String
+  opportunity   Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  productId     String?
+  product       Product?    @relation(fields: [productId], references: [id])
+  itemCode      String?
+  description   String
+  quantity      Decimal     @default(1) @db.Decimal(18, 6)
+  rate          Decimal     @default(0) @db.Decimal(18, 6)
+  discount      Decimal     @default(0) @db.Decimal(9, 4)
+  taxRate       Decimal     @default(0) @db.Decimal(9, 4)
+  amount        Decimal     @default(0) @db.Decimal(18, 6)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@index([opportunityId])
+  @@index([productId])
+}
+
 model Activity {
   id            String         @id @default(cuid())
   type          ActivityType
@@ -1163,6 +1677,9 @@ model Activity {
   dueDate       DateTime?
   completedAt   DateTime?
   status        ActivityStatus @default(PLANNED)
+  metadata      Json?
+  organizationId String?
+  organization   CrmOrganization? @relation(fields: [organizationId], references: [id])
   leadId        String?
   lead          Lead?          @relation(fields: [leadId], references: [id])
   contactId     String?
@@ -1173,6 +1690,11 @@ model Activity {
   user          User           @relation(fields: [userId], references: [id])
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
+
+  @@index([leadId, createdAt])
+  @@index([organizationId, createdAt])
+  @@index([opportunityId, createdAt])
+  @@index([userId, status, dueDate])
 }
 
 enum ActivityType {
@@ -1182,13 +1704,35 @@ enum ActivityType {
   TASK
   NOTE
   FOLLOW_UP
+  STATUS_CHANGE
+  IMPORT
+  CONVERSION
 }
 
 enum ActivityStatus {
+  OPEN
   PLANNED
   IN_PROGRESS
   COMPLETED
   CANCELLED
+}
+
+model CrmSavedView {
+  id        String   @id @default(cuid())
+  companyId String?
+  company   Company? @relation(fields: [companyId], references: [id])
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  entity    String
+  filters   Json
+  columns   Json?
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([companyId, entity])
+  @@unique([userId, entity, name])
 }
 
 // ===================== CUSTOMERS & SUPPLIERS =====================
@@ -1222,6 +1766,7 @@ model Customer {
   paymentEntries PaymentEntry[]
   creditNotes    CreditNote[]
   subscriptions  SubscriptionTemplate[]
+  opportunities  Opportunity[]
 }
 
 model Supplier {
@@ -1270,6 +1815,7 @@ model Quotation {
 
   items       QuotationItem[]
   salesOrders SalesOrder[]
+  crmOpportunities Opportunity[] @relation("OpportunityQuotation")
 }
 
 enum QuotationStatus {
@@ -1302,6 +1848,8 @@ model SalesOrder {
   customer     Customer         @relation(fields: [customerId], references: [id])
   quotationId  String?
   quotation    Quotation?       @relation(fields: [quotationId], references: [id])
+  customerPoNo String?
+  sourceWarehouseId String?
   date         DateTime         @default(now())
   deliveryDate DateTime?
   status       SalesOrderStatus @default(DRAFT)
@@ -1309,6 +1857,10 @@ model SalesOrder {
   taxAmount    Decimal          @default(0) @db.Decimal(18, 6)
   discount     Decimal          @default(0) @db.Decimal(18, 6)
   total        Decimal          @default(0) @db.Decimal(18, 6)
+  deliveredPercent Decimal      @default(0) @db.Decimal(9, 4)
+  billedPercent Decimal         @default(0) @db.Decimal(9, 4)
+  amountBilled Decimal          @default(0) @db.Decimal(18, 6)
+  holdReason   String?
   currency     String           @default("USD")
   notes        String?
   terms        String?
@@ -1318,6 +1870,11 @@ model SalesOrder {
   items         SalesOrderItem[]
   deliveryNotes DeliveryNote[]
   invoices      SalesInvoice[]
+  crmOpportunities Opportunity[] @relation("OpportunitySalesOrder")
+  stockReservations StockReservation[]
+
+  @@index([customerPoNo])
+  @@index([sourceWarehouseId])
 }
 
 enum SalesOrderStatus {
@@ -1326,6 +1883,8 @@ enum SalesOrderStatus {
   PROCESSING
   SHIPPED
   DELIVERED
+  ON_HOLD
+  CLOSED
   CANCELLED
 }
 
@@ -1342,7 +1901,11 @@ model SalesOrderItem {
   discount     Decimal    @default(0) @db.Decimal(9, 4)
   total        Decimal    @db.Decimal(18, 6)
   deliveredQty Decimal    @default(0) @db.Decimal(18, 6)
+  billedQty    Decimal    @default(0) @db.Decimal(18, 6)
+  sourceWarehouseId String?
   createdAt    DateTime   @default(now())
+
+  stockReservations StockReservation[]
 }
 
 // ===================== INVOICING =====================

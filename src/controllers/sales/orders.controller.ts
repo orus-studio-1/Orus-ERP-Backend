@@ -5,6 +5,8 @@ import { success, paginated, error } from '../../utils/response';
 import { handlePrismaError } from '../../utils/prismaError';
 import { generateOrderNo } from '../../utils/generate';
 import { normalizeSalesItems } from './shared';
+import { releaseSalesOrderReservations, reserveSalesOrderStock } from '../../services/inventory/reservation.service';
+import { refreshSalesOrderProgress } from '../../services/sales/salesOrder.service';
 
 export const getSalesOrders = async (req: Request, res: Response) => {
   try {
@@ -47,19 +49,25 @@ export const getSalesOrder = async (req: Request, res: Response) => {
 
 export const createSalesOrder = async (req: Request, res: Response) => {
   try {
-    const { customerId, date, deliveryDate, items = [], notes, terms, currency, discount } = req.body;
+    const { customerId, date, deliveryDate, items = [], notes, terms, currency, discount, customerPoNo, sourceWarehouseId } = req.body;
     if (!customerId) return error(res, 'customerId is required', 400);
     if (!items.length) return error(res, 'At least one sales order item is required', 400);
 
     const order = await prisma.$transaction(async (tx) => {
       const orderNo = await generateOrderNo();
-      const calculated = await normalizeSalesItems(tx, items);
+      if (customerPoNo) {
+        const duplicatePo = await tx.salesOrder.findFirst({ where: { customerId, customerPoNo, status: { not: 'CANCELLED' } } });
+        if (duplicatePo) throw new Error(`Customer PO ${customerPoNo} is already used on ${duplicatePo.orderNo}`);
+      }
+      const calculated = await normalizeSalesItems(tx, items, { customerId, currency: currency || 'USD', priceListId: req.body.priceListId });
       const discountAmount = new Prisma.Decimal(discount || 0);
       const total = calculated.subtotal.plus(calculated.taxAmount).minus(discountAmount);
       return tx.salesOrder.create({
         data: {
           orderNo,
           customerId,
+          customerPoNo,
+          sourceWarehouseId,
           date: date ? new Date(date) : new Date(),
           deliveryDate: deliveryDate ? new Date(deliveryDate) : undefined,
           subtotal: calculated.subtotal,
@@ -69,7 +77,7 @@ export const createSalesOrder = async (req: Request, res: Response) => {
           currency: currency || 'USD',
           notes,
           terms,
-          items: { create: calculated.items },
+          items: { create: calculated.items.map((item: any) => ({ ...item, sourceWarehouseId })) },
         },
         include: { customer: true, items: { include: { product: true } } },
       });
@@ -162,12 +170,32 @@ export const updateSalesOrder = async (req : Request , res: Response)=>{
 export const updateSalesOrderStatus = async (req: Request, res: Response) => {
   try {
     const { status } = req.body;
-    const order = await prisma.salesOrder.update({
-      where: { id: req.params.id },
-      data: { status },
+    const order = await prisma.$transaction(async (tx) => {
+      const existing = await tx.salesOrder.findUnique({ where: { id: req.params.id } });
+      if (!existing) throw new Error('Sales order not found');
+      if (status === 'CONFIRMED' && existing.status === 'DRAFT') {
+        await reserveSalesOrderStock(tx, existing.id, req.body.warehouseId || existing.sourceWarehouseId);
+      }
+      if (status === 'CANCELLED') {
+        await releaseSalesOrderReservations(tx, existing.id);
+      }
+      if (status === 'ON_HOLD') {
+        return tx.salesOrder.update({ where: { id: req.params.id }, data: { status, holdReason: req.body.holdReason || 'On hold' } });
+      }
+      if (status === 'CLOSED') {
+        await releaseSalesOrderReservations(tx, existing.id);
+        return tx.salesOrder.update({ where: { id: req.params.id }, data: { status } });
+      }
+      return tx.salesOrder.update({
+        where: { id: req.params.id },
+        data: { status },
+        include: { customer: true, items: { include: { product: true } }, stockReservations: true },
+      });
     });
+    if (order?.id) await prisma.$transaction((tx) => refreshSalesOrderProgress(tx, order.id));
     return success(res, order, 'Order status updated');
   } catch (err: any) {
+    if (err.message) return error(res, err.message, err.message.includes('not found') ? 404 : 400);
     return handlePrismaError(res, err);
   }
 };

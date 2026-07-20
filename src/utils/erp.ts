@@ -1,4 +1,6 @@
 import { Prisma } from '@prisma/client';
+import { postStockLedger } from '../services/inventory/stockLedger.service';
+import { fulfillSalesOrderReservation } from '../services/inventory/reservation.service';
 
 const D = Prisma.Decimal;
 
@@ -45,9 +47,22 @@ export async function postStockOut(tx: any, items: any[], reference: string, not
   const multiplier = isReversal ? 1 : -1;
   for (const item of items) {
     const product = item.product || await tx.product.findUnique({ where: { id: item.productId } });
-    if (!product || product.type !== 'PRODUCT') continue;
+    if (!product || product.type !== 'PRODUCT' || product.maintainStock === false) continue;
     const qty = Number(item.quantity || 0);
     if (!qty) continue;
+    const actualQty = new D(qty * multiplier);
+    await postStockLedger(tx, {
+      productId: item.productId,
+      warehouseId: warehouse.id,
+      actualQty,
+      rate: item.valuationRate || product.costPrice || 0,
+      voucherType: 'DELIVERY_NOTE',
+      voucherId: item.deliveryNoteId,
+      voucherNo: reference,
+      remarks: notes,
+      batchId: item.batchId,
+      serialNoId: item.serialNoId,
+    });
     await tx.stockMovement.create({
       data: {
         productId: item.productId,
@@ -58,11 +73,9 @@ export async function postStockOut(tx: any, items: any[], reference: string, not
         notes,
       },
     });
-    await tx.stockLevel.upsert({
-      where: { productId_warehouseId: { productId: item.productId, warehouseId: warehouse.id } },
-      update: { quantity: { increment: qty * multiplier } },
-      create: { productId: item.productId, warehouseId: warehouse.id, quantity: qty * multiplier },
-    });
+    if (!isReversal && item.deliveryNote?.salesOrderId) {
+      await fulfillSalesOrderReservation(tx, item.deliveryNote.salesOrderId, item.productId, warehouse.id, qty);
+    }
   }
 }
 

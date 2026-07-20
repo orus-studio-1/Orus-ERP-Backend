@@ -1,0 +1,43 @@
+import { Prisma } from '@prisma/client';
+
+const D = Prisma.Decimal;
+type Tx = any;
+
+export async function refreshSalesOrderProgress(tx: Tx, salesOrderId: string) {
+  const order = await tx.salesOrder.findUnique({
+    where: { id: salesOrderId },
+    include: { items: true, invoices: true },
+  });
+  if (!order) return null;
+  const totalQty = order.items.reduce((sum: Prisma.Decimal, item: any) => sum.plus(item.quantity || 0), new D(0));
+  const deliveredQty = order.items.reduce((sum: Prisma.Decimal, item: any) => sum.plus(item.deliveredQty || 0), new D(0));
+  const billedQty = order.items.reduce((sum: Prisma.Decimal, item: any) => sum.plus(item.billedQty || 0), new D(0));
+  const amountBilled = order.invoices
+    .filter((invoice: any) => invoice.status !== 'CANCELLED')
+    .reduce((sum: Prisma.Decimal, invoice: any) => sum.plus(invoice.grandTotal || invoice.total || 0), new D(0));
+  const deliveredPercent = totalQty.gt(0) ? deliveredQty.div(totalQty).mul(100) : new D(0);
+  const billedPercent = totalQty.gt(0) ? billedQty.div(totalQty).mul(100) : new D(0);
+
+  let status = order.status;
+  if (!['DRAFT', 'CANCELLED', 'ON_HOLD', 'CLOSED'].includes(status)) {
+    if (deliveredPercent.gte(100) && billedPercent.gte(100)) status = 'DELIVERED';
+    else if (deliveredPercent.gt(0) || billedPercent.gt(0)) status = 'PROCESSING';
+    else status = 'CONFIRMED';
+  }
+  return tx.salesOrder.update({
+    where: { id: salesOrderId },
+    data: { deliveredPercent, billedPercent, amountBilled, status },
+  });
+}
+
+export async function markSalesOrderBilled(tx: Tx, salesOrderId: string, invoiceItems: any[]) {
+  const order = await tx.salesOrder.findUnique({ where: { id: salesOrderId }, include: { items: true } });
+  if (!order) return;
+  for (const item of invoiceItems) {
+    await tx.salesOrderItem.updateMany({
+      where: { salesOrderId, productId: item.productId },
+      data: { billedQty: { increment: item.quantity } },
+    });
+  }
+  await refreshSalesOrderProgress(tx, salesOrderId);
+}

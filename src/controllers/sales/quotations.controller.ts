@@ -53,7 +53,7 @@ export const createQuotation = async (req: Request, res: Response) => {
 
     const quotation = await prisma.$transaction(async (tx) => {
       const quotationNo = await generateQuotationNo();
-      const calculated = await normalizeSalesItems(tx, items);
+      const calculated = await normalizeSalesItems(tx, items, { customerId, currency: currency || 'USD', priceListId: req.body.priceListId });
       const discountAmount = new Prisma.Decimal(discount || 0);
       const total = calculated.subtotal.plus(calculated.taxAmount).minus(discountAmount);
       return tx.quotation.create({

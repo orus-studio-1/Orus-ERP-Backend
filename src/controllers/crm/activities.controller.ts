@@ -8,18 +8,19 @@ export const getActivities = async (req: Request, res: Response) => {
   try {
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 20;
-    const { leadId, contactId, opportunityId, type, status } = req.query as any;
+    const { leadId, contactId, opportunityId, organizationId, type, status } = req.query as any;
     const where: any = {};
     if (leadId) where.leadId = leadId;
     if (contactId) where.contactId = contactId;
     if (opportunityId) where.opportunityId = opportunityId;
+    if (organizationId) where.organizationId = organizationId;
     if (type) where.type = type;
     if (status) where.status = status;
 
     const [items, total] = await Promise.all([
       prisma.activity.findMany({
         where,
-        include: { user: { select: { firstName: true, lastName: true } }, lead: true, contact: true },
+        include: { user: { select: { firstName: true, lastName: true } }, lead: true, contact: true, opportunity: true, organization: true },
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
@@ -34,9 +35,18 @@ export const getActivities = async (req: Request, res: Response) => {
 
 export const createActivity = async (req: AuthRequest, res: Response) => {
   try {
+    if (!req.body.leadId && !req.body.contactId && !req.body.opportunityId && !req.body.organizationId) {
+      return error(res, 'Activity must be linked to a lead, contact, organization, or opportunity', 400);
+    }
     const activity = await prisma.activity.create({
       data: { ...req.body, userId: req.body.userId || req.user!.id },
-      include: { user: { select: { firstName: true, lastName: true } } },
+      include: {
+        user: { select: { firstName: true, lastName: true } },
+        lead: true,
+        contact: true,
+        opportunity: true,
+        organization: true,
+      },
     });
     return success(res, activity, 'Activity created', 201);
   } catch (err: any) {

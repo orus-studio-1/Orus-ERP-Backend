@@ -3,3 +3,7 @@ export * from './inventory/categories.controller';
 export * from './inventory/warehouses.controller';
 export * from './inventory/stockMovements.controller';
 export * from './inventory/units.controller';
+export * from './inventory/stockEntries.controller';
+export * from './inventory/pricing.controller';
+export * from './inventory/reports.controller';
+export * from './inventory/masters.controller';

@@ -5,6 +5,7 @@ import { success, error } from '../../utils/response';
 import { handlePrismaError } from '../../utils/prismaError';
 import { audit, postStockOut, resolveAndSnapshotInvoiceTaxes } from '../../utils/erp';
 import { invoiceInclude, invoiceResponse, postInvoiceLedger } from './shared';
+import { markSalesOrderBilled, refreshSalesOrderProgress } from '../../services/sales/salesOrder.service';
 
 export const updateInvoiceStatus = async (req: Request, res: Response) => {
   try {
@@ -23,6 +24,7 @@ export const updateInvoiceStatus = async (req: Request, res: Response) => {
         });
         await resolveAndSnapshotInvoiceTaxes(tx, existing.id, existing);
         if (!existing.deliveryNoteId) await postStockOut(tx, existing.items, existing.invoiceNo, 'Stock issued from submitted sales invoice');
+        if (existing.salesOrderId) await markSalesOrderBilled(tx, existing.salesOrderId, existing.items);
         await postInvoiceLedger(tx, existing);
         await audit(tx, req, { entityType: 'SALES_INVOICE', entityId: existing.id, invoiceId: existing.id, action: 'SUBMIT', statusBefore: existing.status, statusAfter: 'SUBMITTED', message: `Submitted ${existing.invoiceNo}` });
         return existing.id;
@@ -32,6 +34,12 @@ export const updateInvoiceStatus = async (req: Request, res: Response) => {
         if (existing.status === 'CANCELLED') throw new Error('Invoice is already cancelled');
         await postInvoiceLedger(tx, existing, true);
         if (!existing.deliveryNoteId) await postStockOut(tx, existing.items, existing.invoiceNo, 'Stock returned from cancelled sales invoice', undefined, true);
+        if (existing.salesOrderId) {
+          for (const item of existing.items) {
+            await tx.salesOrderItem.updateMany({ where: { salesOrderId: existing.salesOrderId, productId: item.productId }, data: { billedQty: { decrement: item.quantity } } });
+          }
+          await refreshSalesOrderProgress(tx, existing.salesOrderId);
+        }
         await tx.salesInvoice.update({
           where: { id: existing.id },
           data: { status: 'CANCELLED', cancelledAt: new Date(), paymentStatus: 'UNPAID' },
