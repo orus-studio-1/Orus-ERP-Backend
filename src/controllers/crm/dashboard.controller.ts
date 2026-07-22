@@ -38,8 +38,8 @@ export const getCrmDashboard = async (_req: Request, res: Response) => {
         take: 10,
       }),
       prisma.activity.groupBy({ by: ['type'], where: { createdAt: { gte: yearStart } }, _count: { id: true } }),
-      prisma.activity.count({ where: { status: { in: ['PLANNED', 'IN_PROGRESS', 'OPEN'] }, dueDate: { lt: now } } }),
-      prisma.activity.count({ where: { status: { in: ['PLANNED', 'IN_PROGRESS', 'OPEN'] }, dueDate: { lte: todayEnd, gte: new Date(now.getFullYear(), now.getMonth(), now.getDate()) } } }),
+      prisma.activity.count({ where: { status: { in: ['PLANNED', 'IN_PROGRESS'] }, dueDate: { lt: now } } }),
+      prisma.activity.count({ where: { status: { in: ['PLANNED', 'IN_PROGRESS'] }, dueDate: { lte: todayEnd, gte: new Date(now.getFullYear(), now.getMonth(), now.getDate()) } } }),
       prisma.lead.count({
         where: {
           status: { in: ['NEW', 'CONTACTED', 'QUALIFIED'] },

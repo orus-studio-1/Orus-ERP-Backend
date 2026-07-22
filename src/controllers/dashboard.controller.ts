@@ -1,6 +1,6 @@
 ﻿import { Request, Response } from 'express';
 import prisma from '../lib/prisma';
-import { success, error } from '../utils/response';
+import { success } from '../utils/response';
 import { handlePrismaError } from '../utils/prismaError';
 import { serializeInvoice, serializeMoney } from '../utils/invoice';
 
@@ -75,7 +75,7 @@ export const getDashboardStats = async (req: Request, res: Response) => {
         select: { id: true, title: true, firstName: true, lastName: true, company: true, status: true, source: true, createdAt: true },
       }),
       prisma.activity.findMany({
-        where: { status: { in: ['OPEN', 'PLANNED', 'IN_PROGRESS'] }, dueDate: { lte: endOfToday } },
+        where: { status: { in: ['PLANNED', 'IN_PROGRESS'] }, dueDate: { lte: endOfToday } },
         include: {
           lead: { select: { id: true, title: true } },
           opportunity: { select: { id: true, title: true } },
