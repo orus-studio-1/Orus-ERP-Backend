@@ -9,6 +9,7 @@ import {
   getPriceLists, createPriceList, getItemPrices, createItemPrice, getPricingRules, createPricingRule,
   getStockBalanceReport, getStockLedgerReport, getProjectedStockReport,
   getReservedStockReport, getWarehouseValuationReport, getItemWiseSalesReport, getGrossProfitReport, getSlowMovingStockReport,
+  createManualStockReservation, createManualSlowMovingStock,
   getProductAttributes, createProductAttribute, createUomConversion, getBatches, createBatch, getSerialNumbers, createSerialNumber,
 } from '../controllers/inventory.controller';
 import { authenticate, requireModuleAccess } from '../middleware/auth';
@@ -44,6 +45,8 @@ router.get('/reports/warehouse-valuation', getWarehouseValuationReport);
 router.get('/reports/item-wise-sales', getItemWiseSalesReport);
 router.get('/reports/gross-profit', getGrossProfitReport);
 router.get('/reports/slow-moving-stock', getSlowMovingStockReport);
+router.post('/reports/reserved-stock/manual', createManualStockReservation);
+router.post('/reports/slow-moving-stock/manual', createManualSlowMovingStock);
 
 router.route('/units').get(getUnits).post(createUnit);
 router.delete('/units/:id', deleteUnit);

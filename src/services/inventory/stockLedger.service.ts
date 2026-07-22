@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { defaultWarehouse } from '../../utils/erp';
+import { ensureLedgerAccount, postToLedger } from '../accounting/ledger.service';
 
 const D = Prisma.Decimal;
 
@@ -164,6 +165,25 @@ export async function postStockLedger(tx: Tx, input: {
     await tx.serialNumber.update({
       where: { id: input.serialNoId },
       data: { warehouseId: actualQty.gt(0) ? warehouse.id : null, status: actualQty.gt(0) ? 'AVAILABLE' : 'DELIVERED' },
+    });
+  }
+  const stockAccount = await ensureLedgerAccount(tx, '1200', 'Stock In Hand', 'ASSET');
+  const cogsAccount = await ensureLedgerAccount(tx, '5000', 'Cost of Goods Sold / Stock Adjustment', 'EXPENSE');
+  if (!valueDiff.eq(0)) {
+    await postToLedger(tx, {
+      voucherType: 'STOCK_ENTRY',
+      voucherId: input.voucherId || entry.id,
+      voucherNo: input.voucherNo,
+      postingDate: input.postingDate || new Date(),
+      lines: actualQty.gt(0)
+        ? [
+          { accountId: stockAccount.id, debit: valueDiff.abs(), credit: 0, remarks: input.remarks },
+          { accountId: cogsAccount.id, debit: 0, credit: valueDiff.abs(), remarks: input.remarks },
+        ]
+        : [
+          { accountId: cogsAccount.id, debit: valueDiff.abs(), credit: 0, remarks: input.remarks },
+          { accountId: stockAccount.id, debit: 0, credit: valueDiff.abs(), remarks: input.remarks },
+        ],
     });
   }
   return entry;

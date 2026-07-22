@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { calculateInvoiceTotals, serializeInvoice, serializeMoney } from '../../utils/invoice';
 import { recalculateInvoiceAllocations } from '../../utils/erp';
+import { ensureLedgerAccount, postToLedger, reverseLedgerForVoucher } from '../../services/accounting/ledger.service';
 
 export async function nextDocumentNo(tx: any, documentType: 'SALES_INVOICE' | 'PAYMENT_ENTRY' | 'CREDIT_NOTE') {
   let series = await tx.numberingSeries.findFirst({
@@ -106,73 +107,66 @@ export const invoiceInclude = {
   auditLogs: { orderBy: { createdAt: 'desc' as const }, take: 30 },
 };
 
-async function ensureAccount(tx: any, code: string, name: string, type: 'ASSET' | 'LIABILITY' | 'REVENUE' | 'EXPENSE' | 'EQUITY') {
-  return tx.account.upsert({
-    where: { code },
-    update: {},
-    create: { code, name, type, currency: 'USD' },
-  });
-}
-
 export async function postInvoiceLedger(tx: any, invoice: any, isReversal = false) {
-  const ar = await ensureAccount(tx, '1100', 'Accounts Receivable', 'ASSET');
-  const sales = await ensureAccount(tx, '4000', 'Sales Revenue', 'REVENUE');
-  const tax = await ensureAccount(tx, '2100', 'Tax Payable', 'LIABILITY');
-  const factor = isReversal ? -1 : 1;
-  const entries = [
+  if (isReversal) return reverseLedgerForVoucher(tx, 'SALES_INVOICE', invoice.id, new Date());
+  const ar = await ensureLedgerAccount(tx, '1100', 'Accounts Receivable', 'ASSET', { isDefaultReceivable: true });
+  const sales = await ensureLedgerAccount(tx, '4000', 'Sales Revenue', 'REVENUE');
+  const tax = await ensureLedgerAccount(tx, '2100', 'Tax Payable', 'LIABILITY', { isDefaultTax: true });
+  const lines: any[] = [
     {
       accountId: ar.id,
+      partyType: 'CUSTOMER',
+      partyId: invoice.customerId,
       customerId: invoice.customerId,
-      voucherType: isReversal ? 'CANCELLATION' : 'SALES_INVOICE',
-      voucherId: invoice.id,
       invoiceId: invoice.id,
-      debit: invoice.grandTotal.mul(factor),
+      debit: invoice.grandTotal,
       credit: new Prisma.Decimal(0),
       currency: invoice.currency,
-      remarks: `${isReversal ? 'Reverse ' : ''}${invoice.invoiceNo} receivable`,
-      isReversal,
+      remarks: `${invoice.invoiceNo} receivable`,
     },
     {
       accountId: sales.id,
+      partyType: 'CUSTOMER',
+      partyId: invoice.customerId,
       customerId: invoice.customerId,
-      voucherType: isReversal ? 'CANCELLATION' : 'SALES_INVOICE',
-      voucherId: invoice.id,
       invoiceId: invoice.id,
       debit: new Prisma.Decimal(0),
-      credit: invoice.subtotal.mul(factor),
+      credit: invoice.subtotal,
       currency: invoice.currency,
-      remarks: `${isReversal ? 'Reverse ' : ''}${invoice.invoiceNo} revenue`,
-      isReversal,
+      remarks: `${invoice.invoiceNo} revenue`,
     },
   ];
   if (invoice.taxAmount.gt(0)) {
-    entries.push({
+    lines.push({
       accountId: tax.id,
+      partyType: 'CUSTOMER',
+      partyId: invoice.customerId,
       customerId: invoice.customerId,
-      voucherType: isReversal ? 'CANCELLATION' : 'SALES_INVOICE',
-      voucherId: invoice.id,
       invoiceId: invoice.id,
       debit: new Prisma.Decimal(0),
-      credit: invoice.taxAmount.mul(factor),
+      credit: invoice.taxAmount,
       currency: invoice.currency,
-      remarks: `${isReversal ? 'Reverse ' : ''}${invoice.invoiceNo} tax`,
-      isReversal,
+      taxType: 'OUTPUT',
+      remarks: `${invoice.invoiceNo} tax`,
     });
   }
-  await tx.generalLedgerEntry.createMany({ data: entries });
+  await postToLedger(tx, { voucherType: 'SALES_INVOICE', voucherId: invoice.id, voucherNo: invoice.invoiceNo, postingDate: invoice.date || new Date(), lines });
 }
 
 export async function postPaymentLedger(tx: any, payment: any, invoice: any) {
-  const bank = await ensureAccount(tx, '1000', 'Bank / Cash', 'ASSET');
-  const ar = await ensureAccount(tx, '1100', 'Accounts Receivable', 'ASSET');
-  await tx.generalLedgerEntry.createMany({
-    data: [
+  const bank = await ensureLedgerAccount(tx, '1000', 'Bank / Cash', 'ASSET', { isDefaultBank: true });
+  const ar = await ensureLedgerAccount(tx, '1100', 'Accounts Receivable', 'ASSET', { isDefaultReceivable: true });
+  await postToLedger(tx, {
+    voucherType: 'PAYMENT_ENTRY',
+    voucherId: payment.id,
+    voucherNo: payment.paymentNo || payment.reference || payment.id,
+    postingDate: payment.date || new Date(),
+    lines: [
       {
-        postingDate: payment.date,
         accountId: bank.id,
+        partyType: 'CUSTOMER',
+        partyId: payment.customerId,
         customerId: payment.customerId,
-        voucherType: 'PAYMENT_ENTRY',
-        voucherId: payment.id,
         invoiceId: invoice?.id,
         debit: payment.amount,
         credit: new Prisma.Decimal(0),
@@ -180,11 +174,10 @@ export async function postPaymentLedger(tx: any, payment: any, invoice: any) {
         remarks: `${payment.paymentNo} received`,
       },
       {
-        postingDate: payment.date,
         accountId: ar.id,
+        partyType: 'CUSTOMER',
+        partyId: payment.customerId,
         customerId: payment.customerId,
-        voucherType: 'PAYMENT_ENTRY',
-        voucherId: payment.id,
         invoiceId: invoice?.id,
         debit: new Prisma.Decimal(0),
         credit: payment.amount,
@@ -196,36 +189,36 @@ export async function postPaymentLedger(tx: any, payment: any, invoice: any) {
 }
 
 export async function postPaymentEntryLedger(tx: any, entry: any, isReversal = false) {
-  const bank = await ensureAccount(tx, '1000', 'Bank / Cash', 'ASSET');
-  const ar = await ensureAccount(tx, '1100', 'Accounts Receivable', 'ASSET');
-  const factor = isReversal ? -1 : 1;
-  await tx.generalLedgerEntry.createMany({
-    data: [
+  if (isReversal) return reverseLedgerForVoucher(tx, 'PAYMENT_ENTRY', entry.id, new Date());
+  const bank = await ensureLedgerAccount(tx, '1000', 'Bank / Cash', 'ASSET', { isDefaultBank: true });
+  const ar = await ensureLedgerAccount(tx, '1100', 'Accounts Receivable', 'ASSET', { isDefaultReceivable: true });
+  await postToLedger(tx, {
+    voucherType: 'PAYMENT_ENTRY',
+    voucherId: entry.id,
+    voucherNo: entry.paymentNo,
+    postingDate: entry.date || new Date(),
+    lines: [
       {
-        postingDate: entry.date,
         accountId: bank.id,
+        partyType: 'CUSTOMER',
+        partyId: entry.customerId,
         customerId: entry.customerId,
-        voucherType: isReversal ? 'CANCELLATION' : 'PAYMENT_ENTRY',
-        voucherId: entry.id,
         paymentEntryId: entry.id,
-        debit: entry.paidAmount.mul(factor),
+        debit: entry.paidAmount,
         credit: new Prisma.Decimal(0),
         currency: entry.currency,
-        remarks: `${isReversal ? 'Reverse ' : ''}${entry.paymentNo} bank receipt`,
-        isReversal,
+        remarks: `${entry.paymentNo} bank receipt`,
       },
       {
-        postingDate: entry.date,
         accountId: ar.id,
+        partyType: 'CUSTOMER',
+        partyId: entry.customerId,
         customerId: entry.customerId,
-        voucherType: isReversal ? 'CANCELLATION' : 'PAYMENT_ENTRY',
-        voucherId: entry.id,
         paymentEntryId: entry.id,
         debit: new Prisma.Decimal(0),
-        credit: entry.paidAmount.mul(factor),
+        credit: entry.paidAmount,
         currency: entry.currency,
-        remarks: `${isReversal ? 'Reverse ' : ''}${entry.paymentNo} receivable settlement`,
-        isReversal,
+        remarks: `${entry.paymentNo} receivable settlement`,
       },
     ],
   });

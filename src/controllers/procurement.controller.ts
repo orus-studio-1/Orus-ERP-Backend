@@ -3,6 +3,8 @@ import prisma from '../lib/prisma';
 import { success, paginated, error } from '../utils/response';
 import { handlePrismaError } from '../utils/prismaError';
 import { generatePONo, generatePurchaseInvoiceNo } from '../utils/generate';
+import { ensureLedgerAccount, postToLedger, reverseLedgerForVoucher } from '../services/accounting/ledger.service';
+import { Prisma } from '@prisma/client';
 
 // ---- PURCHASE ORDERS ----
 export const getPurchaseOrders = async (req: Request, res: Response) => {
@@ -144,12 +146,26 @@ export const createPurchaseInvoice = async (req: Request, res: Response) => {
 export const updatePurchaseInvoiceStatus = async (req: Request, res: Response) => {
   try {
     const { status, amountPaid } = req.body;
-    const inv = await prisma.purchaseInvoice.update({
-      where: { id: req.params.id },
-      data: { status, amountPaid: amountPaid || undefined },
+    const inv = await prisma.$transaction(async (tx) => {
+      const existing = await tx.purchaseInvoice.findUnique({ where: { id: req.params.id }, include: { items: true } });
+      if (!existing) throw new Error('Purchase invoice not found');
+      if (status === 'SENT' || status === 'SUBMITTED') {
+        const expense = await ensureLedgerAccount(tx, '5100', 'Purchase Expense / Inventory Received', 'EXPENSE');
+        const ap = await ensureLedgerAccount(tx, '2000', 'Accounts Payable', 'LIABILITY', { isDefaultPayable: true });
+        const tax = await ensureLedgerAccount(tx, '1300', 'Input Tax Receivable', 'ASSET', { isDefaultTax: true });
+        const lines: any[] = [
+          { accountId: expense.id, debit: new Prisma.Decimal(existing.subtotal || 0), credit: 0, partyType: 'SUPPLIER', partyId: existing.supplierId, remarks: `${existing.invoiceNo} purchase` },
+        ];
+        if (Number(existing.taxAmount || 0) > 0) lines.push({ accountId: tax.id, debit: new Prisma.Decimal(existing.taxAmount), credit: 0, partyType: 'SUPPLIER', partyId: existing.supplierId, taxType: 'INPUT', remarks: `${existing.invoiceNo} input tax` });
+        lines.push({ accountId: ap.id, debit: 0, credit: new Prisma.Decimal(existing.total || 0), partyType: 'SUPPLIER', partyId: existing.supplierId, remarks: `${existing.invoiceNo} payable` });
+        await postToLedger(tx, { voucherType: 'PURCHASE_INVOICE', voucherId: existing.id, voucherNo: existing.invoiceNo, postingDate: existing.date, lines });
+      }
+      if (status === 'CANCELLED') await reverseLedgerForVoucher(tx, 'PURCHASE_INVOICE', existing.id, new Date());
+      return tx.purchaseInvoice.update({ where: { id: req.params.id }, data: { status, amountPaid: amountPaid || undefined } });
     });
     return success(res, inv, 'Purchase invoice updated');
   } catch (err: any) {
+    if (err.message) return error(res, err.message, err.message.includes('not found') ? 404 : 400);
     return handlePrismaError(res, err);
   }
 };
@@ -162,4 +178,3 @@ export const deletePurchaseInvoice = async (req: Request, res: Response) => {
     return handlePrismaError(res, err);
   }
 };
-

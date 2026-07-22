@@ -216,6 +216,17 @@ model Account {
   parent      Account?    @relation("AccountHierarchy", fields: [parentId], references: [id])
   children    Account[]   @relation("AccountHierarchy")
   description String?
+  rootType    AccountType?
+  isGroup     Boolean     @default(false)
+  freezeAccount Boolean   @default(false)
+  frozenTillDate DateTime?
+  isDefaultCash Boolean   @default(false)
+  isDefaultBank Boolean   @default(false)
+  isDefaultReceivable Boolean @default(false)
+  isDefaultPayable Boolean @default(false)
+  isDefaultTax Boolean    @default(false)
+  isDefaultRoundOff Boolean @default(false)
+  isDefaultRetainedEarnings Boolean @default(false)
   isActive    Boolean     @default(true)
   balance     Decimal     @default(0) @db.Decimal(18, 6)
   currency    String      @default("USD")
@@ -228,6 +239,10 @@ model Account {
   salesInvoiceTaxes SalesInvoiceTax[]
   creditNoteTaxes   CreditNoteTax[]
   ledgerEntries     GeneralLedgerEntry[]
+  budgets           Budget[]
+  bankStatementLines BankStatementLine[]
+  retainedEarningsClosings PeriodClosingVoucher[]
+  fixedAssets       FixedAsset[] @relation("AssetAccount")
 }
 
 enum AccountType {
@@ -268,6 +283,11 @@ model JournalEntry {
   date        DateTime
   description String
   reference   String?
+  referenceType String?
+  referenceId String?
+  entryType   JournalEntryType @default(STANDARD)
+  fiscalYearId String?
+  periodId    String?
   status      EntryStatus @default(DRAFT)
   totalDebit  Decimal     @default(0) @db.Decimal(18, 6)
   totalCredit Decimal     @default(0) @db.Decimal(18, 6)
@@ -277,8 +297,18 @@ model JournalEntry {
   lines JournalLine[]
 }
 
+enum JournalEntryType {
+  STANDARD
+  OPENING
+  CLOSING
+  RECURRING
+  EXCHANGE_REVALUATION
+  DEPRECIATION
+}
+
 enum EntryStatus {
   DRAFT
+  PENDING_APPROVAL
   POSTED
   CANCELLED
 }
@@ -346,9 +376,15 @@ enum PaymentAllocationType {
 }
 
 enum LedgerVoucherType {
+  JOURNAL_ENTRY
   SALES_INVOICE
+  PURCHASE_INVOICE
   PAYMENT_ENTRY
   CREDIT_NOTE
+  STOCK_ENTRY
+  PERIOD_CLOSING
+  EXCHANGE_REVALUATION
+  ASSET_DEPRECIATION
   CANCELLATION
 }
 
@@ -435,8 +471,31 @@ model JournalLine {
   creditAccount   Account?     @relation("CreditAccount", fields: [creditAccountId], references: [id])
   debit           Decimal      @default(0) @db.Decimal(18, 6)
   credit          Decimal      @default(0) @db.Decimal(18, 6)
+  currency        String       @default("USD")
+  exchangeRate    Decimal      @default(1) @db.Decimal(18, 6)
+  costCenterId    String?
+  costCenter      CostCenter?  @relation(fields: [costCenterId], references: [id])
   description     String?
   createdAt       DateTime     @default(now())
+}
+
+model CostCenter {
+  id          String       @id @default(cuid())
+  code        String       @unique
+  name        String
+  parentId    String?
+  parent      CostCenter?  @relation("CostCenterTree", fields: [parentId], references: [id])
+  children    CostCenter[] @relation("CostCenterTree")
+  isGroup     Boolean      @default(false)
+  isActive    Boolean      @default(true)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  journalLines  JournalLine[]
+  ledgerEntries GeneralLedgerEntry[]
+  budgets       Budget[]
+
+  @@index([parentId])
 }
 
 model NumberingSeries {
@@ -2244,11 +2303,18 @@ model CreditNoteTax {
 model GeneralLedgerEntry {
   id             String            @id @default(cuid())
   postingDate    DateTime          @default(now())
+  fiscalYearId   String?
+  periodId       String?
   accountId      String
   account        Account           @relation(fields: [accountId], references: [id])
   customerId     String?
+  partyType      PartyType?
+  partyId        String?
+  costCenterId   String?
+  costCenter     CostCenter?       @relation(fields: [costCenterId], references: [id])
   voucherType    LedgerVoucherType
   voucherId      String
+  voucherLineId  String?
   invoiceId      String?
   invoice        SalesInvoice?     @relation(fields: [invoiceId], references: [id])
   paymentEntryId String?
@@ -2258,16 +2324,160 @@ model GeneralLedgerEntry {
   debit          Decimal           @default(0) @db.Decimal(18, 6)
   credit         Decimal           @default(0) @db.Decimal(18, 6)
   currency       String            @default("USD")
+  exchangeRate   Decimal           @default(1) @db.Decimal(18, 6)
+  debitBase      Decimal           @default(0) @db.Decimal(18, 6)
+  creditBase     Decimal           @default(0) @db.Decimal(18, 6)
+  taxType        String?
+  reconciliationStatus ReconciliationStatus @default(UNRECONCILED)
+  bankStatementLineId String?
   remarks        String?
+  isCancelled    Boolean           @default(false)
   isReversal     Boolean           @default(false)
   reversalOfId   String?
+  createdById    String?
   createdAt      DateTime          @default(now())
 
   @@index([accountId, postingDate])
   @@index([voucherType, voucherId])
+  @@index([partyType, partyId])
+  @@index([costCenterId])
+  @@index([fiscalYearId, periodId])
+  @@index([reconciliationStatus])
   @@index([invoiceId])
   @@index([paymentEntryId])
   @@index([creditNoteId])
+}
+
+model Budget {
+  id            String   @id @default(cuid())
+  fiscalYearId  String
+  accountId     String
+  costCenterId  String?
+  periodId      String?
+  amount        Decimal  @db.Decimal(18, 6)
+  enforce       Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  account    Account    @relation(fields: [accountId], references: [id])
+  costCenter CostCenter? @relation(fields: [costCenterId], references: [id])
+
+  @@index([fiscalYearId, accountId, costCenterId])
+}
+
+model BankStatementLine {
+  id              String   @id @default(cuid())
+  accountId       String
+  account         Account  @relation(fields: [accountId], references: [id])
+  statementDate   DateTime
+  description     String
+  reference       String?
+  debit           Decimal  @default(0) @db.Decimal(18, 6)
+  credit          Decimal  @default(0) @db.Decimal(18, 6)
+  balance         Decimal? @db.Decimal(18, 6)
+  matchedLedgerEntryId String?
+  isReconciled    Boolean  @default(false)
+  createdAt       DateTime @default(now())
+
+  @@index([accountId, statementDate])
+  @@index([isReconciled])
+}
+
+model PeriodClosingVoucher {
+  id             String         @id @default(cuid())
+  closingNo      String         @unique
+  fiscalYearId   String
+  postingDate    DateTime
+  retainedEarningsAccountId String
+  status         DocumentStatus @default(DRAFT)
+  remarks        String?
+  submittedAt    DateTime?
+  cancelledAt    DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  retainedEarningsAccount Account @relation(fields: [retainedEarningsAccountId], references: [id])
+
+  @@index([fiscalYearId, status])
+}
+
+model FixedAsset {
+  id             String   @id @default(cuid())
+  assetNo        String   @unique
+  name           String
+  accountId      String
+  accumulatedDepreciationAccountId String?
+  depreciationExpenseAccountId String?
+  purchaseInvoiceId String?
+  acquisitionDate DateTime
+  cost           Decimal  @db.Decimal(18, 6)
+  salvageValue   Decimal  @default(0) @db.Decimal(18, 6)
+  usefulLifeMonths Int
+  method         DepreciationMethod @default(STRAIGHT_LINE)
+  status         FixedAssetStatus @default(ACTIVE)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  account Account @relation("AssetAccount", fields: [accountId], references: [id])
+
+  @@index([status])
+}
+
+enum DepreciationMethod {
+  STRAIGHT_LINE
+  DECLINING_BALANCE
+}
+
+enum FixedAssetStatus {
+  ACTIVE
+  FULLY_DEPRECIATED
+  DISPOSED
+}
+
+model JournalEntryTemplate {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  lines JournalEntryTemplateLine[]
+  recurringEntries RecurringJournalEntry[]
+}
+
+model JournalEntryTemplateLine {
+  id              String @id @default(cuid())
+  templateId      String
+  template        JournalEntryTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  debitAccountId  String?
+  creditAccountId String?
+  debit           Decimal @default(0) @db.Decimal(18, 6)
+  credit          Decimal @default(0) @db.Decimal(18, 6)
+  description     String?
+}
+
+model RecurringJournalEntry {
+  id          String   @id @default(cuid())
+  templateId  String
+  template    JournalEntryTemplate @relation(fields: [templateId], references: [id])
+  frequency   RecurrenceFrequency
+  nextRunDate DateTime
+  endDate     DateTime?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+enum PartyType {
+  CUSTOMER
+  SUPPLIER
+  EMPLOYEE
+}
+
+enum ReconciliationStatus {
+  UNRECONCILED
+  RECONCILED
 }
 
 model PrintFormat {

@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
+import { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
-import { success } from '../../utils/response';
+import { success, error } from '../../utils/response';
 import { handlePrismaError } from '../../utils/prismaError';
 
 export const getStockBalanceReport = async (req: Request, res: Response) => {
@@ -85,19 +86,77 @@ export const getReservedStockReport = async (_req: Request, res: Response) => {
   try {
     const rows = await prisma.stockReservation.findMany({
       where: { status: { in: ['ACTIVE', 'PARTIAL'] } },
-      include: { product: { select: { sku: true, name: true } }, warehouse: { select: { name: true } }, salesOrder: { select: { orderNo: true, customer: { select: { name: true } } } } },
+      include: { product: { select: { id: true, sku: true, name: true } }, warehouse: { select: { id: true, name: true } }, salesOrder: { select: { id: true, orderNo: true, customer: { select: { name: true } } } }, salesOrderItem: true },
       orderBy: { createdAt: 'desc' },
     });
     return success(res, rows.map((row: any) => ({
+      id: row.id,
       product: row.product,
       warehouse: row.warehouse,
       salesOrder: row.salesOrder,
+      salesOrderItemId: row.salesOrderItemId,
       reservedQty: Number(row.reservedQty),
       fulfilledQty: Number(row.fulfilledQty),
       openQty: Number(row.reservedQty) - Number(row.fulfilledQty),
       status: row.status,
+      createdAt: row.createdAt,
     })));
   } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
+async function refreshReservedQty(tx: any, productId: string, warehouseId: string) {
+  const active = await tx.stockReservation.findMany({
+    where: { productId, warehouseId, status: { in: ['ACTIVE', 'PARTIAL'] } },
+  });
+  const reservedQty = active.reduce((sum: Prisma.Decimal, row: any) => sum.plus(new Prisma.Decimal(row.reservedQty).minus(row.fulfilledQty || 0)), new Prisma.Decimal(0));
+  await tx.stockLevel.upsert({
+    where: { productId_warehouseId: { productId, warehouseId } },
+    update: { reservedQty: Number(reservedQty.toString()) },
+    create: { productId, warehouseId, quantity: 0, reservedQty: Number(reservedQty.toString()) },
+  });
+}
+
+export const createManualStockReservation = async (req: Request, res: Response) => {
+  try {
+    const { salesOrderId, salesOrderItemId, productId, warehouseId, reservedQty } = req.body;
+    if (!salesOrderId || !salesOrderItemId || !productId || !warehouseId || !reservedQty) {
+      return error(res, 'salesOrderId, salesOrderItemId, productId, warehouseId and reservedQty are required', 400);
+    }
+    const qty = new Prisma.Decimal(reservedQty);
+    if (qty.lte(0)) return error(res, 'reservedQty must be greater than zero', 400);
+
+    const reservation = await prisma.$transaction(async (tx) => {
+      const [order, item, product, warehouse] = await Promise.all([
+        tx.salesOrder.findUnique({ where: { id: salesOrderId } }),
+        tx.salesOrderItem.findUnique({ where: { id: salesOrderItemId } }),
+        tx.product.findUnique({ where: { id: productId } }),
+        tx.warehouse.findUnique({ where: { id: warehouseId } }),
+      ]);
+      if (!order) throw new Error('Sales order not found');
+      if (!item || item.salesOrderId !== salesOrderId) throw new Error('Sales order item does not belong to the selected sales order');
+      if (item.productId !== productId) throw new Error('Selected product must match the sales order item product');
+      if (!product || product.type !== 'PRODUCT' || product.maintainStock === false) throw new Error('Only stock-maintained products can be reserved');
+      if (!warehouse || !warehouse.isActive) throw new Error('Active warehouse not found');
+      if (!['CONFIRMED', 'PROCESSING', 'DRAFT'].includes(order.status)) throw new Error('Reservations can only be created for draft, confirmed, or processing sales orders');
+
+      const orderedQty = new Prisma.Decimal(item.quantity);
+      const existing = await tx.stockReservation.findMany({ where: { salesOrderItemId, status: { in: ['ACTIVE', 'PARTIAL'] } } });
+      const alreadyReserved = existing.reduce((sum: Prisma.Decimal, row: any) => sum.plus(new Prisma.Decimal(row.reservedQty).minus(row.fulfilledQty || 0)), new Prisma.Decimal(0));
+      const openOrderQty = orderedQty.minus(item.deliveredQty || 0).minus(alreadyReserved);
+      if (qty.gt(openOrderQty)) throw new Error(`Reservation exceeds open sales order quantity. Open quantity is ${openOrderQty.toString()}`);
+
+      const created = await tx.stockReservation.create({
+        data: { productId, warehouseId, salesOrderId, salesOrderItemId, reservedQty: qty },
+        include: { product: true, warehouse: true, salesOrder: { include: { customer: true } } },
+      });
+      await refreshReservedQty(tx, productId, warehouseId);
+      return created;
+    });
+    return success(res, reservation, 'Stock reservation created', 201);
+  } catch (err: any) {
+    if (err.message) return error(res, err.message, 400);
     return handlePrismaError(res, err);
   }
 };
@@ -161,10 +220,11 @@ export const getGrossProfitReport = async (_req: Request, res: Response) => {
   }
 };
 
-export const getSlowMovingStockReport = async (_req: Request, res: Response) => {
+export const getSlowMovingStockReport = async (req: Request, res: Response) => {
   try {
+    const days = Number(req.query.days || 90);
     const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - 90);
+    cutoff.setDate(cutoff.getDate() - days);
     const levels = await prisma.stockLevel.findMany({ where: { quantity: { gt: 0 } }, include: { product: true, warehouse: true } });
     const rows = [];
     for (const level of levels as any[]) {
@@ -173,11 +233,38 @@ export const getSlowMovingStockReport = async (_req: Request, res: Response) => 
         orderBy: { postingDate: 'desc' },
       });
       if (!lastIssue || lastIssue.postingDate < cutoff) {
-        rows.push({ sku: level.product.sku, productName: level.product.name, warehouse: level.warehouse.name, quantity: Number(level.quantity), lastIssueDate: lastIssue?.postingDate || null, ageDays: lastIssue ? Math.floor((Date.now() - lastIssue.postingDate.getTime()) / 86400000) : null });
+        rows.push({ productId: level.productId, warehouseId: level.warehouseId, sku: level.product.sku, productName: level.product.name, warehouse: level.warehouse.name, quantity: Number(level.quantity), lastIssueDate: lastIssue?.postingDate || null, ageDays: lastIssue ? Math.floor((Date.now() - lastIssue.postingDate.getTime()) / 86400000) : null, thresholdDays: days });
       }
     }
     return success(res, rows);
   } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
+export const createManualSlowMovingStock = async (req: Request, res: Response) => {
+  try {
+    const { productId, warehouseId, quantity, reservedQty } = req.body;
+    if (!productId || !warehouseId || quantity === undefined) return error(res, 'productId, warehouseId and quantity are required', 400);
+    const qty = Number(quantity);
+    if (!Number.isFinite(qty) || qty <= 0) return error(res, 'quantity must be greater than zero', 400);
+    const result = await prisma.$transaction(async (tx) => {
+      const [product, warehouse] = await Promise.all([
+        tx.product.findUnique({ where: { id: productId } }),
+        tx.warehouse.findUnique({ where: { id: warehouseId } }),
+      ]);
+      if (!product || product.type !== 'PRODUCT' || product.maintainStock === false) throw new Error('Only stock-maintained products can be tracked as inventory');
+      if (!warehouse || !warehouse.isActive) throw new Error('Active warehouse not found');
+      return tx.stockLevel.upsert({
+        where: { productId_warehouseId: { productId, warehouseId } },
+        update: { quantity: qty, reservedQty: reservedQty === undefined ? undefined : Number(reservedQty) },
+        create: { productId, warehouseId, quantity: qty, reservedQty: Number(reservedQty || 0) },
+        include: { product: true, warehouse: true },
+      });
+    });
+    return success(res, result, 'Warehouse stock level updated', 201);
+  } catch (err: any) {
+    if (err.message) return error(res, err.message, 400);
     return handlePrismaError(res, err);
   }
 };
