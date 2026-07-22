@@ -9,9 +9,10 @@ import { invoiceInclude, invoiceResponse, nextDocumentNo, normalizeInvoiceItems 
 
 export const createInvoice = async (req: Request, res: Response) => {
   try {
-    const { customerId, salesOrderId, date, dueDate, items = [], notes, terms, currency, discount } = req.body;
+    const { customerId, salesOrderId, date, dueDate, items = [], notes, terms, currency, discount, assignedToId, tags = [] } = req.body;
     if (!customerId) return error(res, 'customerId is required', 400);
     if (!items.length) return error(res, 'At least one invoice item is required', 400);
+    const userId = (req as any).user?.id;
 
     const invoice = await prisma.$transaction(async (tx) => {
       const invoiceNo = await nextDocumentNo(tx, 'SALES_INVOICE');
@@ -36,6 +37,9 @@ export const createInvoice = async (req: Request, res: Response) => {
           currency: currency || 'USD',
           notes,
           terms,
+          createdById: userId,
+          assignedToId: assignedToId || userId,
+          tags: Array.isArray(tags) ? tags : [],
           items: { create: totals.lines },
         },
         include: invoiceInclude,
@@ -52,6 +56,7 @@ export const createInvoice = async (req: Request, res: Response) => {
 
 export const createInvoiceFromSalesOrder = async (req: Request, res: Response) => {
   try {
+    const userId = (req as any).user?.id;
     const invoice = await prisma.$transaction(async (tx) => {
       const order = await tx.salesOrder.findUnique({
         where: { id: req.params.salesOrderId },
@@ -91,6 +96,8 @@ export const createInvoiceFromSalesOrder = async (req: Request, res: Response) =
           currency: order.currency,
           notes: order.notes,
           terms: order.terms,
+          createdById: userId,
+          assignedToId: userId,
           items: { create: totals.lines },
         },
         include: invoiceInclude,
@@ -106,6 +113,7 @@ export const createInvoiceFromSalesOrder = async (req: Request, res: Response) =
 
 export const createInvoiceFromDeliveryNote = async (req: Request, res: Response) => {
   try {
+    const userId = (req as any).user?.id;
     const invoice = await prisma.$transaction(async (tx) => {
       const note = await tx.deliveryNote.findUnique({
         where: { id: req.params.deliveryNoteId },
@@ -146,6 +154,8 @@ export const createInvoiceFromDeliveryNote = async (req: Request, res: Response)
           currency: note.salesOrder?.currency || 'USD',
           notes: note.notes,
           terms: note.salesOrder?.terms,
+          createdById: userId,
+          assignedToId: userId,
           items: { create: totals.lines },
         },
         include: invoiceInclude,
@@ -162,7 +172,7 @@ export const createInvoiceFromDeliveryNote = async (req: Request, res: Response)
 
 export const updateInvoice = async (req: Request, res: Response) => {
   try {
-    const { items, discount, date, dueDate, ...data } = req.body;
+    const { items, discount, date, dueDate, tags, ...data } = req.body;
     const invoice = await prisma.$transaction(async (tx) => {
       const existing = await tx.salesInvoice.findUnique({ where: { id: req.params.id } });
       if (!existing) throw new Error('Invoice not found');
@@ -176,6 +186,7 @@ export const updateInvoice = async (req: Request, res: Response) => {
         where: { id: existing.id },
         data: {
           ...data,
+          ...(Array.isArray(tags) ? { tags } : {}),
           ...(date ? { date: new Date(date) } : {}),
           ...(dueDate ? { dueDate: new Date(dueDate) } : {}),
           ...(totals ? {

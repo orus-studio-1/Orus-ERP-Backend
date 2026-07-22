@@ -38,6 +38,8 @@ model User {
   leadImportBatches LeadImportBatch[] @relation("LeadImportBy")
   crmSavedViews CrmSavedView[]
   crmAssignmentRules CrmAssignmentRule[] @relation("CrmAssignmentRuleAssignee")
+  createdSalesInvoices SalesInvoice[] @relation("SalesInvoiceCreatedBy")
+  assignedSalesInvoices SalesInvoice[] @relation("SalesInvoiceAssignedTo")
 }
 
 enum UserRole {
@@ -1999,6 +2001,11 @@ model SalesInvoice {
   currency           String               @default("USD")
   notes              String?
   terms              String?
+  createdById        String?
+  createdBy          User?                @relation("SalesInvoiceCreatedBy", fields: [createdById], references: [id])
+  assignedToId       String?
+  assignedTo         User?                @relation("SalesInvoiceAssignedTo", fields: [assignedToId], references: [id])
+  tags               String[]             @default([])
   createdAt          DateTime             @default(now())
   updatedAt          DateTime             @updatedAt
 
@@ -2014,6 +2021,8 @@ model SalesInvoice {
   @@index([customerId, status, paymentStatus])
   @@index([salesOrderId])
   @@index([deliveryNoteId])
+  @@index([createdById])
+  @@index([assignedToId])
   @@index([dueDate])
 }
 

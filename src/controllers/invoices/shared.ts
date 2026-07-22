@@ -106,6 +106,8 @@ export async function recalculateInvoicePayment(tx: any, invoiceId: string) {
 
 export const invoiceInclude = {
   customer: { select: { id: true, name: true, email: true, currency: true } },
+  createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
+  assignedTo: { select: { id: true, firstName: true, lastName: true, email: true } },
   salesOrder: { select: { id: true, orderNo: true } },
   deliveryNote: { select: { id: true, deliveryNo: true, status: true } },
   items: { include: { product: { select: { id: true, sku: true, name: true, type: true } }, taxTemplate: { select: { id: true, name: true, code: true } }, taxes: true } },
