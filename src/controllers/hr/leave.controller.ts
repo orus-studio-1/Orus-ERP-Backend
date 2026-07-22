@@ -15,8 +15,40 @@ export const getLeaveTypes = async (req: Request, res: Response) => {
 
 export const createLeaveType = async (req: Request, res: Response) => {
   try {
-    const lt = await prisma.leaveType.create({ data: req.body });
+    const { name, daysAllowed, isPaid, description } = req.body;
+    if (!name) return error(res, 'Leave type name is required', 400);
+    const lt = await prisma.leaveType.create({ data: { name, daysAllowed: Number(daysAllowed || 0), isPaid: isPaid === undefined ? true : Boolean(isPaid), description } });
     return success(res, lt, 'Leave type created', 201);
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
+export const getLeaveBalances = async (req: Request, res: Response) => {
+  try {
+    const { employeeId, date } = req.query as any;
+    if (!employeeId) return error(res, 'employeeId is required', 400);
+    const asOf = date ? new Date(date) : new Date();
+    const allocations = await prisma.leaveAllocation.findMany({
+      where: {
+        employeeId,
+        fromDate: { lte: asOf },
+        toDate: { gte: asOf },
+      },
+      include: { leaveType: true, leavePeriod: true },
+      orderBy: [{ leaveType: { name: 'asc' } }, { createdAt: 'desc' }],
+    });
+    return success(res, allocations.map((allocation: any) => ({
+      allocationId: allocation.id,
+      leaveTypeId: allocation.leaveTypeId,
+      leaveType: allocation.leaveType,
+      leavePeriod: allocation.leavePeriod,
+      allocated: Number(allocation.allocated || 0),
+      used: Number(allocation.used || 0),
+      balance: Number(allocation.balance || 0),
+      fromDate: allocation.fromDate,
+      toDate: allocation.toDate,
+    })));
   } catch (err: any) {
     return handlePrismaError(res, err);
   }
@@ -64,10 +96,23 @@ export const createLeaveRequest = async (req: Request, res: Response) => {
       if (!employee) return error(res, 'Employee profile is not linked to this user', 404);
       body.employeeId = employee.id;
     }
-    const startDate = new Date(body.startDate);
-    const endDate = new Date(body.endDate);
+    if (!body.employeeId || !body.leaveTypeId || !body.startDate || !body.endDate) return error(res, 'employeeId, leaveTypeId, startDate and endDate are required', 400);
+    const startDate = dayStart(new Date(body.startDate));
+    const endDate = dayStart(new Date(body.endDate));
+    if (endDate < startDate) return error(res, 'End date cannot be before start date', 400);
     body.days = Number(body.days || daysBetweenInclusive(startDate, endDate));
-    const allocation = await prisma.leaveAllocation.findFirst({
+    const [employee, leaveType, overlap, allocation] = await Promise.all([
+      prisma.employee.findUnique({ where: { id: body.employeeId } }),
+      prisma.leaveType.findUnique({ where: { id: body.leaveTypeId } }),
+      prisma.leaveRequest.findFirst({
+        where: {
+          employeeId: body.employeeId,
+          status: { in: ['PENDING', 'APPROVED'] },
+          startDate: { lte: endDate },
+          endDate: { gte: startDate },
+        },
+      }),
+      prisma.leaveAllocation.findFirst({
       where: {
         employeeId: body.employeeId,
         leaveTypeId: body.leaveTypeId,
@@ -75,7 +120,12 @@ export const createLeaveRequest = async (req: Request, res: Response) => {
         toDate: { gte: endDate },
       },
       orderBy: { createdAt: 'desc' },
-    });
+      }),
+    ]);
+    if (!employee) return error(res, 'Employee not found', 404);
+    if (!leaveType || !leaveType.isActive) return error(res, 'Active leave type not found', 404);
+    if (overlap) return error(res, 'Employee already has a pending or approved leave request in this date range', 400);
+    if (!allocation) return error(res, 'No leave allocation exists for this employee, leave type, and date range. Allocate leave first from Leave Ledger.', 400);
     if (allocation && Number(allocation.balance) < body.days) {
       return error(res, `Insufficient leave balance. Available: ${allocation.balance}`, 400);
     }
@@ -91,14 +141,15 @@ export const createLeaveRequest = async (req: Request, res: Response) => {
 
 export const approveLeaveRequest = async (req: Request, res: Response) => {
   try {
-    const { status, approvedBy } = req.body;
+    const { status } = req.body;
+    if (!['APPROVED', 'REJECTED'].includes(status)) return error(res, 'status must be APPROVED or REJECTED', 400);
     const lr = await prisma.$transaction(async (tx) => {
       const existing = await tx.leaveRequest.findUnique({ where: { id: req.params.id } });
       if (!existing) throw new Error('Leave request not found');
       if (existing.status !== 'PENDING') throw new Error('Only pending leave requests can be approved or rejected');
       const updated = await tx.leaveRequest.update({
         where: { id: req.params.id },
-        data: { status, approvedBy, approvedAt: new Date() },
+        data: { status, approvedBy: (req as any).user?.id, approvedAt: new Date() },
       });
       if (status === 'APPROVED') {
         const allocation = await tx.leaveAllocation.findFirst({
