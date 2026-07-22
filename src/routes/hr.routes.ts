@@ -8,7 +8,7 @@ import {
   getLeaveRequests, createLeaveRequest, approveLeaveRequest,
   getPayrolls, generatePayroll, updatePayrollStatus,
   getMyHrProfile, updateMyHrProfile, getMyAttendance, createEmployeeCheckin,
-  getShiftTypes, createShiftType, assignShift,
+  getShiftTypes, createShiftType, updateShiftType, getShiftAssignments, assignShift, updateShiftAssignment, getShiftRoster, markShiftAutoAttendance,
   getLeaveAllocations, createLeaveAllocation, getLeaveLedger, getLeavePolicies, createLeavePolicy,
   getSalaryComponents, createSalaryComponent, getSalaryStructures, createSalaryStructure, assignSalaryStructure,
   getPayrollEntries, generatePayrollEntry, updatePayrollEntryStatus,
@@ -45,7 +45,11 @@ router.route('/positions/:id').put(authorize(...hrRoles), updatePosition).delete
 
 router.route('/attendance').get(authorize(...hrRoles, 'MANAGER'), getAttendance).post(authorize(...hrRoles), markAttendance);
 router.route('/shift-types').get(authorize(...hrRoles), getShiftTypes).post(authorize(...hrRoles), createShiftType);
-router.post('/shift-assignments', authorize(...hrRoles), assignShift);
+router.put('/shift-types/:id', authorize(...hrRoles), updateShiftType);
+router.route('/shift-assignments').get(authorize(...hrRoles), getShiftAssignments).post(authorize(...hrRoles), assignShift);
+router.put('/shift-assignments/:id', authorize(...hrRoles), updateShiftAssignment);
+router.get('/shift-roster', authorize(...hrRoles, 'MANAGER'), getShiftRoster);
+router.post('/shift-auto-attendance', authorize(...hrRoles), markShiftAutoAttendance);
 
 router.route('/leave-types').get(getLeaveTypes).post(authorize(...hrRoles), createLeaveType);
 router.route('/leave-policies').get(authorize(...hrRoles), getLeavePolicies).post(authorize(...hrRoles), createLeavePolicy);

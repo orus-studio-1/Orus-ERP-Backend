@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import bcrypt from 'bcryptjs';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/auth';
 import { error, success } from '../utils/response';
@@ -176,6 +177,45 @@ export const updateUserAccess = async (req: Request, res: Response) => {
     if (!updated) return error(res, 'Unable to update user', 500);
     const { password: _, ...safeUser } = updated;
     return success(res, safeUser, 'User access updated');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
+export const issueUserPassword = async (req: Request, res: Response) => {
+  try {
+    const id = companyId(req);
+    const { password, confirmPassword, activate = true } = req.body;
+    if (!password || String(password).length < 8) return error(res, 'Password must be at least 8 characters', 400);
+    if (confirmPassword !== undefined && password !== confirmPassword) return error(res, 'Password confirmation does not match', 400);
+
+    const user = await prisma.user.findFirst({
+      where: { id: req.params.id, ...(id ? { companyId: id } : {}) },
+      include: { employee: true },
+    });
+    if (!user) return error(res, 'User not found', 404);
+    if (user.id === (req as AuthRequest).user?.id) return error(res, 'Use Settings to change your own password', 400);
+
+    const hashed = await bcrypt.hash(password, 10);
+    const updated = await prisma.$transaction(async (tx) => {
+      await tx.user.update({ where: { id: user.id }, data: { password: hashed, isActive: activate ? true : user.isActive } });
+      await tx.accessAuditLog.create({
+        data: {
+          companyId: id || undefined,
+          actorId: (req as AuthRequest).user?.id,
+          targetUserId: user.id,
+          action: 'USER_PASSWORD_ISSUED',
+          message: `${activate ? 'Issued password and activated login' : 'Issued password'} for ${user.email}`,
+        },
+      });
+      return tx.user.findUnique({
+        where: { id: user.id },
+        include: { accessRoles: { include: { role: true } }, permissionOverrides: { include: { permission: true } }, employee: true },
+      });
+    });
+    if (!updated) return error(res, 'Unable to issue password', 500);
+    const { password: _, ...safeUser } = updated;
+    return success(res, safeUser, activate ? 'Password issued and login activated' : 'Password issued');
   } catch (err: any) {
     return handlePrismaError(res, err);
   }

@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import prisma from '../../lib/prisma';
 import { success, paginated, error } from '../../utils/response';
 import { handlePrismaError } from '../../utils/prismaError';
@@ -80,12 +81,12 @@ export const createEmployee = async (req: Request, res: Response) => {
 
     const companyId = (req as any).user?.companyId;
     const requestedRoleIds = Array.isArray(roleIds) ? roleIds : [];
-    const hashed = await bcrypt.hash(password || 'Employee@123', 10);
+    const hashed = await bcrypt.hash(password || crypto.randomBytes(32).toString('hex'), 10);
     const employeeId = await generateEmployeeId();
 
     const result = await prisma.$transaction(async (tx) => {
       const user = await tx.user.create({
-        data: { email, password: hashed, firstName, lastName, phone, role: role || 'EMPLOYEE', companyId },
+        data: { email, password: hashed, firstName, lastName, phone, role: role || 'EMPLOYEE', companyId, isActive: Boolean(password) },
       });
       let uniqueRoleIds = Array.from(new Set(requestedRoleIds.filter(Boolean)));
       if (!uniqueRoleIds.length && companyId) {
@@ -116,7 +117,7 @@ export const createEmployee = async (req: Request, res: Response) => {
       return emp;
     });
 
-    return success(res, result, 'Employee created', 201);
+    return success(res, result, password ? 'Employee created with login password' : 'Employee created. Issue a login password from Access Control before the employee can sign in.', 201);
   } catch (err: any) {
     return handlePrismaError(res, err);
   }

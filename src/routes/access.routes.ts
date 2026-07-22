@@ -7,6 +7,7 @@ import {
   getAccessRoles,
   getAccessSummary,
   getAccessUsers,
+  issueUserPassword,
   updateAccessRole,
   updateUserAccess,
 } from '../controllers/access.controller';
@@ -27,6 +28,7 @@ router.put('/roles/:id', requirePermission('access', 'roles', 'WRITE'), updateAc
 router.route('/users')
   .get(requirePermission('access', 'users', 'READ'), getAccessUsers);
 router.put('/users/:id/access', requirePermission('access', 'users', 'WRITE'), updateUserAccess);
+router.put('/users/:id/password', requirePermission('access', 'users', 'WRITE'), issueUserPassword);
 
 router.get('/audit', requirePermission('access', 'audit', 'READ'), getAccessAuditLogs);
 
