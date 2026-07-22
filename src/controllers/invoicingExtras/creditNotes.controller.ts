@@ -13,14 +13,20 @@ export const getCreditNotes = async (req: Request, res: Response) => {
   try {
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 20;
+    const { status, customerId, originalInvoiceId } = req.query as any;
+    const where: any = {};
+    if (status) where.status = status;
+    if (customerId) where.customerId = customerId;
+    if (originalInvoiceId) where.originalInvoiceId = originalInvoiceId;
     const [items, total] = await Promise.all([
       prisma.creditNote.findMany({
+        where,
         include: { customer: { select: { name: true } }, originalInvoice: { select: { invoiceNo: true } }, items: true },
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
         take: limit,
       }),
-      prisma.creditNote.count(),
+      prisma.creditNote.count({ where }),
     ]);
     return paginated(res, items.map(serializeCreditNote), total, page, limit);
   } catch (err: any) {
@@ -43,7 +49,8 @@ export const getCreditNote = async (req: Request, res: Response) => {
 
 export const createCreditNote = async (req: Request, res: Response) => {
   try {
-    const { originalInvoiceId, reason = 'OTHER', notes, items } = req.body;
+    const { originalInvoiceId, reason = 'OTHER', date, notes, items } = req.body;
+    if (!originalInvoiceId) return error(res, 'originalInvoiceId is required', 400);
     const note = await prisma.$transaction(async (tx) => {
       const invoice = await tx.salesInvoice.findUnique({ where: { id: originalInvoiceId }, include: { items: { include: { product: true } } } });
       if (!invoice) throw new Error('Invoice not found');
@@ -58,6 +65,12 @@ export const createCreditNote = async (req: Request, res: Response) => {
         taxRate: item.taxRate || 0,
         discount: item.discount || 0,
       }));
+      if (!sourceItems.length) throw new Error('At least one credit note item is required');
+      for (const item of sourceItems) {
+        if (!item.productId) throw new Error('Every credit note row must have a product');
+        if (Number(item.quantity || 0) <= 0) throw new Error('Credit quantity must be greater than zero');
+        if (Number(item.unitPrice || 0) < 0) throw new Error('Credit rate cannot be negative');
+      }
       const totals = calculateInvoiceTotals(sourceItems);
       const created = await tx.creditNote.create({
         data: {
@@ -65,6 +78,7 @@ export const createCreditNote = async (req: Request, res: Response) => {
           customerId: invoice.customerId,
           originalInvoiceId: invoice.id,
           reason,
+          date: date ? new Date(date) : new Date(),
           currency: invoice.currency,
           notes,
           subtotal: totals.subtotal,
@@ -94,6 +108,11 @@ export const createCreditNote = async (req: Request, res: Response) => {
     if (err.message) return error(res, err.message, err.message.includes('not found') ? 404 : 400);
     return handlePrismaError(res, err);
   }
+};
+
+export const createCreditNoteFromInvoice = async (req: Request, res: Response) => {
+  req.body.originalInvoiceId = req.params.invoiceId;
+  return createCreditNote(req, res);
 };
 
 export const updateCreditNoteStatus = async (req: Request, res: Response) => {

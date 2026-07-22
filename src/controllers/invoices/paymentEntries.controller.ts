@@ -50,6 +50,21 @@ export const createPaymentEntry = async (req: Request, res: Response) => {
     if (!paidAmount || Number(paidAmount) <= 0) return error(res, 'paidAmount must be greater than zero', 400);
     const entry = await prisma.$transaction(async (tx) => {
       const paymentNo = await nextDocumentNo(tx, 'PAYMENT_ENTRY');
+      for (const row of allocations) {
+        const amount = new Prisma.Decimal(row.allocatedAmount || 0);
+        if (amount.lte(0)) throw new Error('Allocation amount must be greater than zero');
+        if (row.invoiceId) {
+          const invoice = await tx.salesInvoice.findUnique({ where: { id: row.invoiceId } });
+          if (!invoice || invoice.status !== 'SUBMITTED') throw new Error('Allocations require submitted invoices');
+          if (invoice.customerId !== customerId) throw new Error(`Invoice ${invoice.invoiceNo} belongs to a different customer`);
+          if (amount.gt(invoice.outstandingAmount)) throw new Error(`Allocation exceeds outstanding for ${invoice.invoiceNo}`);
+        }
+        if (row.creditNoteId) {
+          const creditNote = await tx.creditNote.findUnique({ where: { id: row.creditNoteId } });
+          if (!creditNote || creditNote.status !== 'SUBMITTED') throw new Error('Credit note allocations require submitted credit notes');
+          if (creditNote.customerId !== customerId) throw new Error(`Credit note ${creditNote.creditNoteNo} belongs to a different customer`);
+        }
+      }
       const allocatedAmount = allocations.reduce((sum: Prisma.Decimal, row: any) => sum.plus(row.allocatedAmount || 0), new Prisma.Decimal(0));
       const paid = new Prisma.Decimal(paidAmount);
       if (allocatedAmount.gt(paid)) throw new Error('Allocated amount cannot exceed paid amount');

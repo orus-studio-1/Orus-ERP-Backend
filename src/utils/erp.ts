@@ -91,9 +91,13 @@ export async function resolveAndSnapshotInvoiceTaxes(tx: any, invoiceId: string,
 
   const invoiceTaxTotals = new Map<string, any>();
   for (const item of invoice.items) {
-    const lines = [{
+    const templateLines = item.taxTemplateId ? await tx.taxTemplateLine.findMany({
+      where: { taxTemplateId: item.taxTemplateId },
+      orderBy: { rowOrder: 'asc' },
+    }) : [];
+    const lines = templateLines.length ? templateLines : [{
       id: null,
-      label: item.taxRate.gt(0) ? `Tax ${item.taxRate.toString()}%` : 'Zero Rated',
+      label: item.taxRate.gt(0) ? `Manual Tax ${item.taxRate.toString()}%` : 'Zero Rated',
       rate: item.taxRate,
       rowOrder: 0,
       accountId: null,
@@ -108,7 +112,7 @@ export async function resolveAndSnapshotInvoiceTaxes(tx: any, invoiceId: string,
         : item.netAmount;
       const taxAmount = taxableAmount.mul(rate.div(100));
       previousTax = previousTax.plus(taxAmount);
-      const snapshot = { label: line.label, rate: rate.toString(), chargeType: line.chargeType };
+      const snapshot = { label: line.label, rate: rate.toString(), chargeType: line.chargeType, taxTemplateId: item.taxTemplateId || null };
 
       await tx.salesInvoiceItemTax.create({
         data: {

@@ -78,13 +78,21 @@ export async function normalizeInvoiceItems(tx: any, items: any[]) {
       });
     }
 
+    let taxTemplate = item.taxTemplateId ? await tx.taxTemplate.findFirst({
+      where: { id: item.taxTemplateId, isActive: true },
+      include: { lines: { orderBy: { rowOrder: 'asc' } } },
+    }) : null;
+    if (item.taxTemplateId && !taxTemplate) throw new Error('Selected tax template is inactive or not found');
+    const templateRate = taxTemplate?.lines?.reduce((sum: Prisma.Decimal, line: any) => sum.plus(line.rate || 0), new Prisma.Decimal(0));
+
     normalized.push({
       ...item,
       productId: product.id,
       itemCode: itemCode || product.sku,
       description: item.description || product.description || product.name,
       unitPrice: item.unitPrice ?? item.rate ?? product.salePrice,
-      taxRate: item.taxRate ?? product.taxRate ?? 0,
+      taxRate: templateRate ?? item.taxRate ?? product.taxRate ?? 0,
+      taxTemplateId: taxTemplate?.id || item.taxTemplateId || undefined,
     });
   }
 
@@ -100,7 +108,7 @@ export const invoiceInclude = {
   customer: { select: { id: true, name: true, email: true, currency: true } },
   salesOrder: { select: { id: true, orderNo: true } },
   deliveryNote: { select: { id: true, deliveryNo: true, status: true } },
-  items: { include: { product: { select: { id: true, sku: true, name: true, type: true } }, taxes: true } },
+  items: { include: { product: { select: { id: true, sku: true, name: true, type: true } }, taxTemplate: { select: { id: true, name: true, code: true } }, taxes: true } },
   taxes: true,
   payments: { orderBy: { date: 'desc' as const } },
   paymentAllocations: { include: { paymentEntry: { select: { id: true, paymentNo: true, date: true, method: true, reference: true } } } },

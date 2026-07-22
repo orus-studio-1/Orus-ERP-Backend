@@ -50,6 +50,15 @@ function normalizeItems(items: any[]) {
   }));
 }
 
+function validateDeliveryItems(items: any[]) {
+  if (!items.length) return 'At least one delivery item is required';
+  for (const item of items) {
+    if (!item.productId) return 'Every delivery row must have a product';
+    if (Number(item.quantity || item.deliveredQty || 0) <= 0) return 'Delivery quantity must be greater than zero';
+  }
+  return null;
+}
+
 export const getDeliveryNotes = async (req: Request, res: Response) => {
   try {
     const page = parseInt(req.query.page as string) || 1;
@@ -83,7 +92,8 @@ export const createDeliveryNote = async (req: Request, res: Response) => {
   try {
     const { customerId, salesOrderId, warehouseId, date, postingDate, notes, items = [] } = req.body;
     if (!customerId) return error(res, 'customerId is required', 400);
-    if (!items.length) return error(res, 'At least one delivery item is required', 400);
+    const itemError = validateDeliveryItems(items);
+    if (itemError) return error(res, itemError, 400);
     const note = await prisma.$transaction(async (tx) => {
       const deliveryNo = await nextDeliveryNo(tx);
       const created = await tx.deliveryNote.create({

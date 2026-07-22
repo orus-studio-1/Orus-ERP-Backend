@@ -69,8 +69,10 @@ export const createInvoiceFromSalesOrder = async (req: Request, res: Response) =
         unitPrice: item.unitPrice,
         taxRate: item.taxRate,
         discount: item.discount,
+        taxTemplateId: item.product?.defaultTaxTemplateId,
       }));
-      const totals = calculateInvoiceTotals(sourceItems, order.discount);
+      const normalizedItems = await normalizeInvoiceItems(tx, sourceItems);
+      const totals = calculateInvoiceTotals(normalizedItems, order.discount);
       const created = await tx.salesInvoice.create({
         data: {
           invoiceNo,
@@ -122,7 +124,8 @@ export const createInvoiceFromDeliveryNote = async (req: Request, res: Response)
         discount: 0,
         taxTemplateId: item.product?.defaultTaxTemplateId,
       }));
-      const totals = calculateInvoiceTotals(sourceItems);
+      const normalizedItems = await normalizeInvoiceItems(tx, sourceItems);
+      const totals = calculateInvoiceTotals(normalizedItems);
       const created = await tx.salesInvoice.create({
         data: {
           invoiceNo,

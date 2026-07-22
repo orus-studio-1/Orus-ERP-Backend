@@ -7,7 +7,7 @@ import {
   getActivities, getLeadActivities, createActivity, createLeadActivity, updateActivity, completeActivity, cancelActivity, deleteActivity,
   getOrganizations, getOrganization, createOrganization, updateOrganization, deleteOrganization,
   getCrmDashboard, getSavedViews, createSavedView, deleteSavedView,
-  getAssignmentRules, createAssignmentRule, updateAssignmentRule, deleteAssignmentRule,
+  getAssignmentRules, createAssignmentRule, updateAssignmentRule, deleteAssignmentRule, testAssignmentRule,
 } from '../controllers/crm.controller';
 import { authenticate, requireModuleAccess } from '../middleware/auth';
 
@@ -29,6 +29,7 @@ router.route('/leads/:id/activities').get(getLeadActivities).post(createLeadActi
 router.route('/leads/:id').get(getLead).put(updateLead).delete(deleteLead);
 
 router.route('/assignment-rules').get(getAssignmentRules).post(createAssignmentRule);
+router.post('/assignment-rules/test', testAssignmentRule);
 router.route('/assignment-rules/:id').put(updateAssignmentRule).patch(updateAssignmentRule).delete(deleteAssignmentRule);
 
 router.route('/organizations').get(getOrganizations).post(createOrganization);

@@ -54,6 +54,9 @@ export const createPayment = async (req: Request, res: Response) => {
       if (invoiceId && !invoice) throw new Error('Invoice not found');
       if (invoice && invoice.status !== 'SUBMITTED') throw new Error('Payments can only be recorded against submitted invoices');
       const paymentAmount = new Prisma.Decimal(amount);
+      if (paymentAmount.lte(0)) throw new Error('Payment amount must be greater than zero');
+      if (!customerId && !invoice) throw new Error('customerId is required for an unallocated payment');
+      if (invoice && customerId && invoice.customerId !== customerId) throw new Error(`Invoice ${invoice.invoiceNo} belongs to a different customer`);
       if (invoice && paymentAmount.gt(invoice.outstandingAmount)) throw new Error('Payment cannot exceed outstanding amount');
       const paymentNo = await nextDocumentNo(tx, 'PAYMENT_ENTRY');
       const created = await tx.payment.create({

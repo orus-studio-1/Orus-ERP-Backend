@@ -64,8 +64,10 @@ export const searchProducts = async (req: Request, res: Response) => {
         name: true,
         salePrice: true,
         taxRate: true,
+        defaultTaxTemplateId: true,
         unitId: true,
         unit: { select: { id: true, name: true, symbol: true } },
+        defaultTaxTemplate: { select: { id: true, name: true, code: true, lines: { orderBy: { rowOrder: 'asc' }, select: { rate: true } } } },
       },
       orderBy: { name: 'asc' },
       take: 20,
@@ -73,7 +75,9 @@ export const searchProducts = async (req: Request, res: Response) => {
     return success(res, products.map((p: any) => ({
       ...p,
       salePrice: Number(p.salePrice || 0),
-      taxRate: Number(p.taxRate || 0),
+      taxRate: p.defaultTaxTemplate?.lines?.length
+        ? p.defaultTaxTemplate.lines.reduce((sum: number, line: any) => sum + Number(line.rate || 0), 0)
+        : Number(p.taxRate || 0),
     })));
   } catch (err: any) {
     return handlePrismaError(res, err);
