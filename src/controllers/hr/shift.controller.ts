@@ -179,7 +179,7 @@ export const getShiftRoster = async (req: Request, res: Response) => {
     const attendanceByEmployee = new Map(attendance.map((item: any) => [item.employeeId, item]));
     return success(res, assignments.map((assignment: any) => {
       const { start, end } = shiftWindow(date, assignment.shiftType);
-      const att = attendanceByEmployee.get(assignment.employeeId);
+      const att: any = attendanceByEmployee.get(assignment.employeeId);
       return {
         assignmentId: assignment.id,
         employee: assignment.employee,

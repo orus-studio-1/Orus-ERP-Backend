@@ -210,6 +210,7 @@ model AccessAuditLog {
 // ===================== ACCOUNTING =====================
 model Account {
   id          String      @id @default(cuid())
+  companyId   String?
   code        String      @unique
   name        String
   type        AccountType
@@ -245,6 +246,8 @@ model Account {
   bankStatementLines BankStatementLine[]
   retainedEarningsClosings PeriodClosingVoucher[]
   fixedAssets       FixedAsset[] @relation("AssetAccount")
+
+  @@index([companyId])
 }
 
 enum AccountType {
@@ -257,6 +260,7 @@ enum AccountType {
 
 model FiscalYear {
   id        String   @id @default(cuid())
+  companyId String?
   name      String
   startDate DateTime
   endDate   DateTime
@@ -266,6 +270,8 @@ model FiscalYear {
 
   periods         Period[]
   numberingSeries NumberingSeries[]
+
+  @@index([companyId])
 }
 
 model Period {
@@ -281,6 +287,7 @@ model Period {
 
 model JournalEntry {
   id          String      @id @default(cuid())
+  companyId   String?
   entryNumber String      @unique
   date        DateTime
   description String
@@ -297,6 +304,8 @@ model JournalEntry {
   updatedAt   DateTime    @updatedAt
 
   lines JournalLine[]
+
+  @@index([companyId])
 }
 
 enum JournalEntryType {
@@ -502,6 +511,7 @@ model CostCenter {
 
 model NumberingSeries {
   id           String               @id @default(cuid())
+  companyId    String?
   documentType DocumentType
   name         String
   pattern      String
@@ -518,12 +528,14 @@ model NumberingSeries {
   updatedAt    DateTime             @updatedAt
 
   @@unique([documentType, name, fiscalYearId, branch])
+  @@index([companyId])
   @@index([documentType, isDefault, isActive])
 }
 
 // ===================== INVENTORY =====================
 model Category {
   id          String     @id @default(cuid())
+  companyId   String?
   name        String
   code        String?    @unique
   description String?
@@ -534,10 +546,13 @@ model Category {
   updatedAt   DateTime   @updatedAt
 
   products Product[]
+
+  @@index([companyId])
 }
 
 model Unit {
   id        String   @id @default(cuid())
+  companyId String?
   name      String   @unique
   symbol    String
   createdAt DateTime @default(now())
@@ -545,10 +560,13 @@ model Unit {
   products          Product[]
   salesInvoiceItems SalesInvoiceItem[]
   subscriptionItems SubscriptionTemplateItem[]
+
+  @@index([companyId])
 }
 
 model Product {
   id                   String       @id @default(cuid())
+  companyId            String?
   sku                  String       @unique
   name                 String
   description          String?
@@ -610,6 +628,7 @@ model Product {
 
   @@index([variantOfId])
   @@index([defaultWarehouseId])
+  @@index([companyId])
 }
 
 enum ProductType {
@@ -667,6 +686,7 @@ enum WarehouseType {
 
 model StockLevel {
   id          String    @id @default(cuid())
+  companyId   String?
   productId   String
   product     Product   @relation(fields: [productId], references: [id])
   warehouseId String
@@ -676,10 +696,12 @@ model StockLevel {
   updatedAt   DateTime  @updatedAt
 
   @@unique([productId, warehouseId])
+  @@index([companyId])
 }
 
 model StockMovement {
   id          String       @id @default(cuid())
+  companyId   String?
   productId   String
   product     Product      @relation(fields: [productId], references: [id])
   warehouseId String
@@ -690,10 +712,13 @@ model StockMovement {
   reference   String?
   notes       String?
   createdAt   DateTime     @default(now())
+
+  @@index([companyId])
 }
 
 model StockLedgerEntry {
   id                   String    @id @default(cuid())
+  companyId             String?
   productId             String
   product               Product   @relation(fields: [productId], references: [id])
   warehouseId           String
@@ -721,10 +746,12 @@ model StockLedgerEntry {
   @@index([voucherType, voucherId])
   @@index([batchId])
   @@index([serialNoId])
+  @@index([companyId])
 }
 
 model InventoryValuationLayer {
   id                    String    @id @default(cuid())
+  companyId              String?
   productId              String
   product                Product   @relation(fields: [productId], references: [id])
   warehouseId            String
@@ -738,10 +765,12 @@ model InventoryValuationLayer {
   createdAt              DateTime  @default(now())
 
   @@index([productId, warehouseId, isClosed, postingDate])
+  @@index([companyId])
 }
 
 model StockReservation {
   id               String                 @id @default(cuid())
+  companyId         String?
   productId         String
   product           Product                @relation(fields: [productId], references: [id])
   warehouseId       String
@@ -759,6 +788,7 @@ model StockReservation {
   @@index([productId, warehouseId, status])
   @@index([salesOrderId])
   @@index([salesOrderItemId])
+  @@index([companyId])
 }
 
 enum StockReservationStatus {
@@ -770,6 +800,7 @@ enum StockReservationStatus {
 
 model StockEntry {
   id                String            @id @default(cuid())
+  companyId         String?
   entryNo           String            @unique
   purpose           StockEntryPurpose
   status            DocumentStatus    @default(DRAFT)
@@ -788,6 +819,7 @@ model StockEntry {
 
   @@index([status, purpose])
   @@index([postingDate])
+  @@index([companyId])
 }
 
 model StockEntryItem {
@@ -820,6 +852,7 @@ enum StockEntryPurpose {
 
 model Batch {
   id             String    @id @default(cuid())
+  companyId      String?
   batchNo        String    @unique
   productId      String
   product        Product   @relation(fields: [productId], references: [id])
@@ -836,10 +869,12 @@ model Batch {
 
   @@index([productId, warehouseId])
   @@index([expiryDate])
+  @@index([companyId])
 }
 
 model SerialNumber {
   id             String    @id @default(cuid())
+  companyId      String?
   serialNo       String    @unique
   productId      String
   product        Product   @relation(fields: [productId], references: [id])
@@ -855,6 +890,7 @@ model SerialNumber {
 
   @@index([productId, status])
   @@index([warehouseId])
+  @@index([companyId])
 }
 
 enum SerialNumberStatus {
@@ -866,6 +902,7 @@ enum SerialNumberStatus {
 
 model PriceList {
   id          String      @id @default(cuid())
+  companyId   String?
   name        String      @unique
   currency    String      @default("USD")
   selling     Boolean     @default(true)
@@ -876,10 +913,13 @@ model PriceList {
 
   itemPrices ItemPrice[]
   pricingRules PricingRule[]
+
+  @@index([companyId])
 }
 
 model ItemPrice {
   id          String    @id @default(cuid())
+  companyId   String?
   productId   String
   product     Product   @relation(fields: [productId], references: [id])
   priceListId String
@@ -894,10 +934,12 @@ model ItemPrice {
   updatedAt   DateTime  @updatedAt
 
   @@index([productId, priceListId, customerId])
+  @@index([companyId])
 }
 
 model PricingRule {
   id             String      @id @default(cuid())
+  companyId      String?
   name           String
   priceListId    String?
   priceList      PriceList?  @relation(fields: [priceListId], references: [id])
@@ -919,6 +961,7 @@ model PricingRule {
   @@index([productId])
   @@index([categoryId])
   @@index([customerId])
+  @@index([companyId])
 }
 
 model ProductUomConversion {
@@ -966,6 +1009,7 @@ enum MovementType {
 // ===================== HR =====================
 model Department {
   id          String   @id @default(cuid())
+  companyId   String?
   name        String
   code        String   @unique
   managerId   String?
@@ -976,10 +1020,13 @@ model Department {
 
   employees Employee[]
   positions Position[]
+
+  @@index([companyId])
 }
 
 model Position {
   id           String     @id @default(cuid())
+  companyId    String?
   title        String
   departmentId String
   department   Department @relation(fields: [departmentId], references: [id])
@@ -990,6 +1037,8 @@ model Position {
   createdAt    DateTime   @default(now())
 
   employees Employee[]
+
+  @@index([companyId])
 }
 
 model Employee {
@@ -1479,6 +1528,7 @@ model CrmOrganization {
 
 model Lead {
   id             String     @id @default(cuid())
+  companyId      String?
   title          String
   firstName      String
   lastName       String
@@ -1519,6 +1569,7 @@ model Lead {
   @@index([phone])
   @@index([organizationId])
   @@index([importBatchId])
+  @@index([companyId])
 }
 
 model CrmAssignmentRule {
@@ -1626,6 +1677,7 @@ enum LeadImportRowStatus {
 
 model Contact {
   id             String   @id @default(cuid())
+  companyId      String?
   firstName      String
   lastName       String
   email          String?
@@ -1653,10 +1705,12 @@ model Contact {
   @@index([phone])
   @@index([leadId])
   @@index([organizationId])
+  @@index([companyId])
 }
 
 model Opportunity {
   id             String           @id @default(cuid())
+  companyId      String?
   title          String
   leadId         String?          @unique
   lead           Lead?            @relation(fields: [leadId], references: [id])
@@ -1692,6 +1746,7 @@ model Opportunity {
   @@index([customerId])
   @@index([quotationId])
   @@index([salesOrderId])
+  @@index([companyId])
 }
 
 enum OpportunityStage {
@@ -1732,6 +1787,7 @@ model OpportunityItem {
 
 model Activity {
   id            String         @id @default(cuid())
+  companyId     String?
   type          ActivityType
   subject       String
   description   String?
@@ -1756,6 +1812,7 @@ model Activity {
   @@index([organizationId, createdAt])
   @@index([opportunityId, createdAt])
   @@index([userId, status, dueDate])
+  @@index([companyId])
 }
 
 enum ActivityType {
@@ -1799,6 +1856,7 @@ model CrmSavedView {
 // ===================== CUSTOMERS & SUPPLIERS =====================
 model Customer {
   id           String   @id @default(cuid())
+  companyId    String?
   customerNo   String   @unique
   name         String
   email        String?
@@ -1828,10 +1886,13 @@ model Customer {
   creditNotes    CreditNote[]
   subscriptions  SubscriptionTemplate[]
   opportunities  Opportunity[]
+
+  @@index([companyId])
 }
 
 model Supplier {
   id           String   @id @default(cuid())
+  companyId    String?
   supplierNo   String   @unique
   name         String
   email        String?
@@ -1853,11 +1914,14 @@ model Supplier {
 
   purchaseOrders PurchaseOrder[]
   invoices       PurchaseInvoice[]
+
+  @@index([companyId])
 }
 
 // ===================== SALES =====================
 model Quotation {
   id          String          @id @default(cuid())
+  companyId   String?
   quotationNo String          @unique
   customerId  String
   customer    Customer        @relation(fields: [customerId], references: [id])
@@ -1877,6 +1941,8 @@ model Quotation {
   items       QuotationItem[]
   salesOrders SalesOrder[]
   crmOpportunities Opportunity[] @relation("OpportunityQuotation")
+
+  @@index([companyId])
 }
 
 enum QuotationStatus {
@@ -1904,6 +1970,7 @@ model QuotationItem {
 
 model SalesOrder {
   id           String           @id @default(cuid())
+  companyId    String?
   orderNo      String           @unique
   customerId   String
   customer     Customer         @relation(fields: [customerId], references: [id])
@@ -1936,6 +2003,7 @@ model SalesOrder {
 
   @@index([customerPoNo])
   @@index([sourceWarehouseId])
+  @@index([companyId])
 }
 
 enum SalesOrderStatus {
@@ -1972,6 +2040,7 @@ model SalesOrderItem {
 // ===================== INVOICING =====================
 model SalesInvoice {
   id                 String               @id @default(cuid())
+  companyId          String?
   invoiceNo          String               @unique
   seriesId           String?
   customerId         String
@@ -2024,10 +2093,12 @@ model SalesInvoice {
   @@index([createdById])
   @@index([assignedToId])
   @@index([dueDate])
+  @@index([companyId])
 }
 
 model DeliveryNote {
   id           String         @id @default(cuid())
+  companyId    String?
   deliveryNo   String         @unique
   seriesId     String?
   customerId   String
@@ -2052,6 +2123,7 @@ model DeliveryNote {
   @@index([customerId, status])
   @@index([salesOrderId])
   @@index([warehouseId])
+  @@index([companyId])
 }
 
 model DeliveryNoteItem {
@@ -2105,6 +2177,7 @@ model SalesInvoiceItem {
 
 model TaxTemplate {
   id          String           @id @default(cuid())
+  companyId   String?
   name        String
   code        String           @unique
   scope       TaxTemplateScope @default(BOTH)
@@ -2118,6 +2191,8 @@ model TaxTemplate {
   products          Product[]                  @relation("ProductDefaultTaxTemplate")
   invoiceItems      SalesInvoiceItem[]
   subscriptionItems SubscriptionTemplateItem[]
+
+  @@index([companyId])
 }
 
 model TaxTemplateLine {
@@ -2170,6 +2245,7 @@ model SalesInvoiceItemTax {
 
 model Payment {
   id         String        @id @default(cuid())
+  companyId  String?
   paymentNo  String        @unique
   type       PaymentType
   customerId String?
@@ -2183,10 +2259,13 @@ model Payment {
   reference  String?
   notes      String?
   createdAt  DateTime      @default(now())
+
+  @@index([companyId])
 }
 
 model PaymentEntry {
   id                String             @id @default(cuid())
+  companyId         String?
   paymentNo         String             @unique
   seriesId          String?
   status            PaymentEntryStatus @default(DRAFT)
@@ -2211,6 +2290,7 @@ model PaymentEntry {
 
   @@index([customerId, status])
   @@index([date])
+  @@index([companyId])
 }
 
 model PaymentEntryAllocation {
@@ -2246,6 +2326,7 @@ enum PaymentMethod {
 
 model CreditNote {
   id                String           @id @default(cuid())
+  companyId         String?
   creditNoteNo      String           @unique
   seriesId          String?
   customerId        String
@@ -2273,6 +2354,7 @@ model CreditNote {
 
   @@index([customerId, status])
   @@index([originalInvoiceId])
+  @@index([companyId])
 }
 
 model CreditNoteItem {
@@ -2311,6 +2393,7 @@ model CreditNoteTax {
 
 model GeneralLedgerEntry {
   id             String            @id @default(cuid())
+  companyId      String?
   postingDate    DateTime          @default(now())
   fiscalYearId   String?
   periodId       String?
@@ -2355,10 +2438,12 @@ model GeneralLedgerEntry {
   @@index([invoiceId])
   @@index([paymentEntryId])
   @@index([creditNoteId])
+  @@index([companyId])
 }
 
 model Budget {
   id            String   @id @default(cuid())
+  companyId     String?
   fiscalYearId  String
   accountId     String
   costCenterId  String?
@@ -2372,10 +2457,12 @@ model Budget {
   costCenter CostCenter? @relation(fields: [costCenterId], references: [id])
 
   @@index([fiscalYearId, accountId, costCenterId])
+  @@index([companyId])
 }
 
 model BankStatementLine {
   id              String   @id @default(cuid())
+  companyId        String?
   accountId       String
   account         Account  @relation(fields: [accountId], references: [id])
   statementDate   DateTime
@@ -2390,6 +2477,7 @@ model BankStatementLine {
 
   @@index([accountId, statementDate])
   @@index([isReconciled])
+  @@index([companyId])
 }
 
 model PeriodClosingVoucher {
@@ -2491,6 +2579,7 @@ enum ReconciliationStatus {
 
 model PrintFormat {
   id         String             @id @default(cuid())
+  companyId  String?
   name       String
   docType    PrintFormatDocType
   isDefault  Boolean            @default(false)
@@ -2503,10 +2592,12 @@ model PrintFormat {
 
   @@unique([docType, name])
   @@index([docType, isDefault, isActive])
+  @@index([companyId])
 }
 
 model SubscriptionTemplate {
   id           String              @id @default(cuid())
+  companyId    String?
   name         String
   customerId   String
   customer     Customer            @relation(fields: [customerId], references: [id])
@@ -2529,6 +2620,7 @@ model SubscriptionTemplate {
 
   @@index([isActive, nextRunDate])
   @@index([customerId])
+  @@index([companyId])
 }
 
 model SubscriptionTemplateItem {
@@ -2563,6 +2655,7 @@ model SubscriptionInvoiceRun {
 
 model AuditLog {
   id             String        @id @default(cuid())
+  companyId      String?
   actorId        String?
   actorEmail     String?
   actorRole      String?
@@ -2585,11 +2678,13 @@ model AuditLog {
   @@index([invoiceId, createdAt])
   @@index([deliveryNoteId, createdAt])
   @@index([creditNoteId, createdAt])
+  @@index([companyId])
 }
 
 // ===================== PROCUREMENT =====================
 model PurchaseOrder {
   id           String              @id @default(cuid())
+  companyId    String?
   orderNo      String              @unique
   supplierId   String
   supplier     Supplier            @relation(fields: [supplierId], references: [id])
@@ -2608,6 +2703,8 @@ model PurchaseOrder {
 
   items    PurchaseOrderItem[]
   invoices PurchaseInvoice[]
+
+  @@index([companyId])
 }
 
 enum PurchaseOrderStatus {
@@ -2637,6 +2734,7 @@ model PurchaseOrderItem {
 
 model PurchaseInvoice {
   id              String         @id @default(cuid())
+  companyId       String?
   invoiceNo       String         @unique
   supplierId      String
   supplier        Supplier       @relation(fields: [supplierId], references: [id])
@@ -2656,6 +2754,8 @@ model PurchaseInvoice {
   updatedAt       DateTime       @updatedAt
 
   items PurchaseInvoiceItem[]
+
+  @@index([companyId])
 }
 
 model PurchaseInvoiceItem {

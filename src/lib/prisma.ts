@@ -1,13 +1,50 @@
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import pg from 'pg';
+import { applyTenantToPrismaArgs } from '../utils/tenant';
 
 const globalForPrisma = globalThis as unknown as { prisma: PrismaClient };
+
+function isDelegate(value: any) {
+  return value && typeof value === 'object' && ['findMany', 'findFirst', 'create', 'update'].some((method) => typeof value[method] === 'function');
+}
+
+function withTenantProxy<T extends object>(client: T): T {
+  const delegateCache = new Map<PropertyKey, any>();
+  return new Proxy(client as any, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (prop === '$transaction' && typeof value === 'function') {
+        return (input: any, ...rest: any[]) => {
+          if (typeof input === 'function') {
+            return value.call(target, (tx: any) => input(withTenantProxy(tx)), ...rest);
+          }
+          return value.call(target, input, ...rest);
+        };
+      }
+      if (typeof value === 'function') return value.bind(target);
+      if (!isDelegate(value)) return value;
+      if (delegateCache.has(prop)) return delegateCache.get(prop);
+      const delegate = new Proxy(value, {
+        get(delegateTarget, operation) {
+          const delegateValue = Reflect.get(delegateTarget, operation);
+          if (typeof delegateValue !== 'function') return delegateValue;
+          return (args?: any, ...rest: any[]) => {
+            const nextArgs = applyTenantToPrismaArgs(String(prop), String(operation), args || {});
+            return delegateValue.call(delegateTarget, nextArgs, ...rest);
+          };
+        },
+      });
+      delegateCache.set(prop, delegate);
+      return delegate;
+    },
+  }) as T;
+}
 
 function createPrismaClient() {
   const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
   const adapter = new PrismaPg(pool);
-  return new PrismaClient({
+  const client = new PrismaClient({
     adapter,
     log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error'],
     transactionOptions: {
@@ -15,6 +52,7 @@ function createPrismaClient() {
       timeout: 90000,
     },
   });
+  return withTenantProxy(client);
 }
 
 export const prisma = globalForPrisma.prisma || createPrismaClient();

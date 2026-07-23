@@ -3,9 +3,11 @@ import prisma from '../lib/prisma';
 import { success } from '../utils/response';
 import { handlePrismaError } from '../utils/prismaError';
 import { serializeInvoice, serializeMoney } from '../utils/invoice';
+import { AuthRequest } from '../middleware/auth';
 
 export const getDashboardStats = async (req: Request, res: Response) => {
   try {
+    const companyId = (req as AuthRequest).user?.companyId || null;
     const now = new Date();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     const startOfYear = new Date(now.getFullYear(), 0, 1);
@@ -96,7 +98,10 @@ export const getDashboardStats = async (req: Request, res: Response) => {
           DATE_TRUNC('month', "date") as month,
           SUM("grandTotal") as revenue
         FROM "SalesInvoice"
-        WHERE status = 'SUBMITTED' AND "paymentStatus" = 'PAID' AND "date" >= ${startOfYear}
+        WHERE status = 'SUBMITTED'
+          AND "paymentStatus" = 'PAID'
+          AND "date" >= ${startOfYear}
+          AND (${companyId}::text IS NULL OR "companyId" = ${companyId})
         GROUP BY DATE_TRUNC('month', "date")
         ORDER BY month ASC
       `,

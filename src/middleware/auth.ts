@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { error } from '../utils/response';
 import { computeEffectiveAccess, firstPathSegment, getActionForRequest, hasPermission, EffectiveAccess } from '../utils/accessControl';
+import { runWithTenant } from '../utils/tenant';
 
 export interface AuthRequest extends Request {
   user?: { id: string; email: string; role: string; companyId?: string | null };
@@ -20,7 +21,7 @@ export const authenticate = async (req: AuthRequest, res: Response, next: NextFu
     req.user = { id: decoded.id, email: decoded.email, role: decoded.role, companyId: decoded.companyId };
     req.access = await computeEffectiveAccess(decoded.id);
     if (!req.user.companyId && req.access.companyId) req.user.companyId = req.access.companyId;
-    next();
+    runWithTenant(req.user.companyId, () => next());
   } catch {
     error(res, 'Invalid or expired token', 401);
   }
