@@ -30,8 +30,21 @@ import { runDueSubscriptionsJob } from './controllers/invoicingExtras.controller
 const app = express();
 
 app.use(helmet());
+const allowedOrigins = [
+  'http://localhost:3000',
+  'http://localhost:8081',
+  'http://127.0.0.1:3000',
+  'http://127.0.0.1:8081',
+  process.env.FRONTEND_URL,
+].filter(Boolean) as string[];
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin) || origin.includes('localhost') || origin.includes('127.0.0.1')) {
+      return callback(null, true);
+    }
+    return callback(null, true);
+  },
   credentials: true,
 }));
 app.use(morgan('dev'));
