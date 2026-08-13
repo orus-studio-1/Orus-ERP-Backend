@@ -19,7 +19,7 @@ function lifecycleValidation(type: string, body: any) {
 
 export const getLifecycleEvents = async (req: Request, res: Response) => {
   try {
-    const where: any = {};
+    const where: any = { employee: { user: { companyId: (req as any).user?.companyId || '__missing_company__' } } };
     if (req.query.employeeId) where.employeeId = req.query.employeeId;
     if (req.query.type) where.type = req.query.type;
     if (req.query.status) where.status = req.query.status;
@@ -39,7 +39,7 @@ export const createLifecycleEvent = async (req: Request, res: Response) => {
     const type = req.body.type;
     const validation = lifecycleValidation(type, req.body);
     if (validation) return error(res, validation, 400);
-    const employee = await prisma.employee.findUnique({ where: { id: req.body.employeeId } });
+    const employee = await prisma.employee.findFirst({ where: { id: req.body.employeeId, user: { companyId: (req as any).user?.companyId || '__missing_company__' } } });
     if (!employee) return error(res, 'Employee not found', 404);
     if (employee.status === 'TERMINATED' && type !== 'ONBOARDING') return error(res, 'Terminated employees can only receive onboarding/reactivation events', 400);
     const open = await prisma.employeeLifecycleEvent.findFirst({ where: { employeeId: employee.id, status: 'DRAFT' } });
@@ -109,11 +109,13 @@ export const updateLifecycleEventStatus = async (req: Request, res: Response) =>
   }
 };
 
-export const getHrDashboard = async (_req: Request, res: Response) => {
+export const getHrDashboard = async (req: Request, res: Response) => {
   try {
+    const companyId = (req as any).user?.companyId || '__missing_company__';
+    const employee = { user: { companyId } };
     const [employees, pendingLeaves, openPayrolls, activeDepartments] = await Promise.all([
-      prisma.employee.count({ where: { status: { in: ['ACTIVE', 'PROBATION', 'ON_LEAVE'] } } }),
-      prisma.leaveRequest.count({ where: { status: 'PENDING' } }),
+      prisma.employee.count({ where: { status: { in: ['ACTIVE', 'PROBATION', 'ON_LEAVE'] }, ...employee } }),
+      prisma.leaveRequest.count({ where: { status: 'PENDING', employee } }),
       prisma.payrollEntry.count({ where: { status: { in: ['DRAFT', 'SUBMITTED'] } } }),
       prisma.department.count({ where: { isActive: true } }),
     ]);

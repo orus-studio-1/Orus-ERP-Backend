@@ -1,4 +1,9 @@
 import prisma from '../lib/prisma';
+import { currentCompanyId } from './tenant';
+
+function tenantPrefix() {
+  return (currentCompanyId() || 'GLOBAL').replace(/[^a-zA-Z0-9]/g, '').slice(-6).toUpperCase();
+}
 
 export async function generateInvoiceNo(): Promise<string> {
   const count = await prisma.salesInvoice.count();
@@ -22,7 +27,7 @@ export async function generateQuotationNo(): Promise<string> {
 
 export async function generateCustomerNo(): Promise<string> {
   const count = await prisma.customer.count();
-  return `CUST-${String(count + 1).padStart(5, '0')}`;
+  return `${tenantPrefix()}-CUST-${String(count + 1).padStart(5, '0')}`;
 }
 
 export async function generateSupplierNo(): Promise<string> {
@@ -32,7 +37,7 @@ export async function generateSupplierNo(): Promise<string> {
 
 export async function generateEmployeeId(): Promise<string> {
   const count = await prisma.employee.count();
-  return `EMP-${String(count + 1).padStart(5, '0')}`;
+  return `${tenantPrefix()}-EMP-${String(count + 1).padStart(5, '0')}`;
 }
 
 export async function generateJournalNo(): Promise<string> {

@@ -96,7 +96,7 @@ export const updateShiftType = async (req: Request, res: Response) => {
 export const getShiftAssignments = async (req: Request, res: Response) => {
   try {
     const { employeeId, shiftTypeId, status, date } = req.query as any;
-    const where: any = {};
+    const where: any = { employee: { user: { companyId: (req as any).user?.companyId || '__missing_company__' } } };
     if (employeeId) where.employeeId = employeeId;
     if (shiftTypeId) where.shiftTypeId = shiftTypeId;
     if (status) where.status = status;
@@ -123,7 +123,7 @@ export const assignShift = async (req: Request, res: Response) => {
 
     const item = await prisma.$transaction(async (tx) => {
       const [employee, shiftType] = await Promise.all([
-        tx.employee.findUnique({ where: { id: employeeId } }),
+        tx.employee.findFirst({ where: { id: employeeId, user: { companyId: (req as any).user?.companyId || '__missing_company__' } } }),
         tx.shiftType.findUnique({ where: { id: shiftTypeId } }),
       ]);
       if (!employee) throw new Error('Employee not found');
@@ -168,12 +168,12 @@ export const getShiftRoster = async (req: Request, res: Response) => {
     const workDate = req.query.date ? new Date(String(req.query.date)) : new Date();
     const date = dayStart(workDate);
     const assignments = await prisma.shiftAssignment.findMany({
-      where: assignmentWhereForDate(date),
+      where: { ...assignmentWhereForDate(date), employee: { user: { companyId: (req as any).user?.companyId || '__missing_company__' } } },
       include: assignmentInclude,
       orderBy: [{ shiftType: { startTime: 'asc' } }, { employee: { employeeId: 'asc' } }],
     });
     const attendance = await prisma.attendance.findMany({
-      where: { date },
+      where: { date, employee: { user: { companyId: (req as any).user?.companyId || '__missing_company__' } } },
       include: { employee: true },
     });
     const attendanceByEmployee = new Map(attendance.map((item: any) => [item.employeeId, item]));
@@ -200,6 +200,7 @@ export const markShiftAutoAttendance = async (req: Request, res: Response) => {
     const date = dayStart(req.body.date ? new Date(req.body.date) : new Date());
     const shiftTypeId = req.body.shiftTypeId;
     const where: any = assignmentWhereForDate(date);
+    where.employee = { user: { companyId: (req as any).user?.companyId || '__missing_company__' } };
     if (shiftTypeId) where.shiftTypeId = shiftTypeId;
 
     const result = await prisma.$transaction(async (tx) => {

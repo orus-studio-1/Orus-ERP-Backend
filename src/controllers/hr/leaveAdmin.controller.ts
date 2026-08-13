@@ -5,7 +5,7 @@ import { handlePrismaError } from '../../utils/prismaError';
 
 export const getLeaveAllocations = async (req: Request, res: Response) => {
   try {
-    const where: any = {};
+    const where: any = { employee: { user: { companyId: (req as any).user?.companyId || '__missing_company__' } } };
     if (req.query.employeeId) where.employeeId = req.query.employeeId;
     const items = await prisma.leaveAllocation.findMany({
       where,
@@ -23,6 +23,8 @@ export const createLeaveAllocation = async (req: Request, res: Response) => {
     const { employeeId, leaveTypeId, leavePeriodId, allocated, fromDate, toDate, notes } = req.body;
     const amount = Number(allocated || 0);
     if (amount <= 0) return error(res, 'Allocated leave must be greater than zero', 400);
+    const employee = await prisma.employee.findFirst({ where: { id: employeeId, user: { companyId: (req as any).user?.companyId || '__missing_company__' } } });
+    if (!employee) return error(res, 'Employee not found in your company', 404);
     const item = await prisma.$transaction(async (tx) => {
       const allocation = await tx.leaveAllocation.create({
         data: {
@@ -47,7 +49,7 @@ export const createLeaveAllocation = async (req: Request, res: Response) => {
 
 export const getLeaveLedger = async (req: Request, res: Response) => {
   try {
-    const where: any = {};
+    const where: any = { employee: { user: { companyId: (req as any).user?.companyId || '__missing_company__' } } };
     if (req.query.employeeId) where.employeeId = req.query.employeeId;
     if (req.query.leaveTypeId) where.leaveTypeId = req.query.leaveTypeId;
     const items = await prisma.leaveLedgerEntry.findMany({

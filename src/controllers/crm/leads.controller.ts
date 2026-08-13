@@ -348,9 +348,10 @@ export const importLeads = async (req: AuthRequest, res: Response) => {
   }
 };
 
-export const getLeadImports = async (_req: Request, res: Response) => {
+export const getLeadImports = async (req: Request, res: Response) => {
   try {
     const imports = await prisma.leadImportBatch.findMany({
+      where: { companyId: (req as AuthRequest).user?.companyId || '__missing_company__' },
       include: { importedBy: { select: { firstName: true, lastName: true, email: true } } },
       orderBy: { createdAt: 'desc' },
       take: 50,
@@ -363,8 +364,8 @@ export const getLeadImports = async (_req: Request, res: Response) => {
 
 export const getLeadImport = async (req: Request, res: Response) => {
   try {
-    const batch = await prisma.leadImportBatch.findUnique({
-      where: { id: req.params.id },
+    const batch = await prisma.leadImportBatch.findFirst({
+      where: { id: req.params.id, companyId: (req as AuthRequest).user?.companyId || '__missing_company__' },
       include: { rows: { orderBy: { rowNo: 'asc' } }, importedBy: { select: { firstName: true, lastName: true, email: true } } },
     });
     if (!batch) return error(res, 'Import batch not found', 404);

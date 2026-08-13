@@ -1,14 +1,23 @@
 import { Request, Response } from 'express';
 import prisma from '../../lib/prisma';
-import { success, paginated } from '../../utils/response';
+import { success, paginated, error } from '../../utils/response';
 import { handlePrismaError } from '../../utils/prismaError';
+import { companyEmployeeWhere, getCompanyEmployee } from './shared';
+
+function attendanceTime(date: string, value?: string) {
+  if (!value) return undefined;
+  const parsed = /^\d{2}:\d{2}(:\d{2})?$/.test(value) ? new Date(`${date}T${value.length === 5 ? `${value}:00` : value}`) : new Date(value);
+  if (Number.isNaN(parsed.getTime())) throw new Error('Check-in and check-out must be valid times');
+  return parsed;
+}
 
 export const getAttendance = async (req: Request, res: Response) => {
   try {
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 30;
     const { employeeId, date, month, year } = req.query as any;
-    const where: any = {};
+    const companyId = (req as any).user?.companyId;
+    const where: any = { employee: companyEmployeeWhere(companyId) };
     if (employeeId) where.employeeId = employeeId;
     if (date) where.date = { gte: new Date(date), lt: new Date(new Date(date).getTime() + 86400000) };
     if (month && year) {
@@ -36,17 +45,26 @@ export const getAttendance = async (req: Request, res: Response) => {
 export const markAttendance = async (req: Request, res: Response) => {
   try {
     const { employeeId, date, checkIn, checkOut, status, notes } = req.body;
-    const hoursWorked = checkIn && checkOut
-      ? (new Date(checkOut).getTime() - new Date(checkIn).getTime()) / 3600000
+    if (!employeeId || !date || !status) return error(res, 'employeeId, date and status are required', 400);
+    const employee = await getCompanyEmployee(employeeId, (req as any).user?.companyId);
+    if (!employee) return error(res, 'Employee not found in your company', 404);
+    const workDate = new Date(`${date}T00:00:00.000Z`);
+    const checkInAt = attendanceTime(date, checkIn);
+    const checkOutAt = attendanceTime(date, checkOut);
+    if (Number.isNaN(workDate.getTime())) return error(res, 'A valid attendance date is required', 400);
+    if (checkInAt && checkOutAt && checkOutAt < checkInAt) return error(res, 'Check-out cannot be before check-in', 400);
+    const hoursWorked = checkInAt && checkOutAt
+      ? (checkOutAt.getTime() - checkInAt.getTime()) / 3600000
       : undefined;
 
     const attendance = await prisma.attendance.upsert({
-      where: { employeeId_date: { employeeId, date: new Date(date) } },
-      update: { checkIn: checkIn ? new Date(checkIn) : undefined, checkOut: checkOut ? new Date(checkOut) : undefined, status, notes, hoursWorked },
-      create: { employeeId, date: new Date(date), checkIn: checkIn ? new Date(checkIn) : undefined, checkOut: checkOut ? new Date(checkOut) : undefined, status, notes, hoursWorked },
+      where: { employeeId_date: { employeeId, date: workDate } },
+      update: { checkIn: checkInAt, checkOut: checkOutAt, status, notes, hoursWorked },
+      create: { employeeId, date: workDate, checkIn: checkInAt, checkOut: checkOutAt, status, notes, hoursWorked },
     });
     return success(res, attendance, 'Attendance recorded');
   } catch (err: any) {
+    if (err.message?.includes('valid time')) return error(res, err.message, 400);
     return handlePrismaError(res, err);
   }
 };

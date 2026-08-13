@@ -83,6 +83,13 @@ model Company {
   leadImportBatches LeadImportBatch[]
   crmSavedViews CrmSavedView[]
   crmAssignmentRules CrmAssignmentRule[]
+  shiftTypes ShiftType[]
+  leaveTypes LeaveType[]
+  leavePeriods LeavePeriod[]
+  leavePolicies LeavePolicy[]
+  salaryComponents SalaryComponent[]
+  salaryStructures SalaryStructure[]
+  payrollEntries PayrollEntry[]
 }
 
 enum PermissionAction {
@@ -1156,6 +1163,8 @@ enum AttendanceStatus {
 
 model LeaveType {
   id          String   @id @default(cuid())
+  companyId   String?
+  company     Company? @relation(fields: [companyId], references: [id])
   name        String
   daysAllowed Int
   isPaid      Boolean  @default(true)
@@ -1167,6 +1176,8 @@ model LeaveType {
   policyDetails LeavePolicyDetail[]
   allocations   LeaveAllocation[]
   ledgerEntries LeaveLedgerEntry[]
+
+  @@index([companyId])
 }
 
 model LeaveRequest {
@@ -1239,6 +1250,8 @@ enum PayrollItemType {
 
 model ShiftType {
   id          String   @id @default(cuid())
+  companyId   String?
+  company     Company? @relation(fields: [companyId], references: [id])
   name        String
   startTime   String
   endTime     String
@@ -1249,6 +1262,8 @@ model ShiftType {
   updatedAt   DateTime @updatedAt
 
   assignments ShiftAssignment[]
+
+  @@index([companyId])
 }
 
 model ShiftAssignment {
@@ -1304,6 +1319,8 @@ model Holiday {
 
 model LeavePeriod {
   id          String   @id @default(cuid())
+  companyId   String?
+  company     Company? @relation(fields: [companyId], references: [id])
   name        String
   fromDate    DateTime
   toDate      DateTime
@@ -1312,11 +1329,15 @@ model LeavePeriod {
 
   allocations LeaveAllocation[]
   policyAssignments LeavePolicyAssignment[]
+
+  @@index([companyId])
 }
 
 model LeavePolicy {
   id          String   @id @default(cuid())
-  name        String   @unique
+  companyId   String?
+  company     Company? @relation(fields: [companyId], references: [id])
+  name        String
   description String?
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
@@ -1324,6 +1345,9 @@ model LeavePolicy {
 
   details     LeavePolicyDetail[]
   assignments LeavePolicyAssignment[]
+
+  @@unique([companyId, name])
+  @@index([companyId])
 }
 
 model LeavePolicyDetail {
@@ -1388,7 +1412,9 @@ model LeaveLedgerEntry {
 
 model SalaryComponent {
   id          String              @id @default(cuid())
-  name        String              @unique
+  companyId   String?
+  company     Company?            @relation(fields: [companyId], references: [id])
+  name        String
   type        SalaryComponentType
   description String?
   defaultAmount Decimal?          @db.Decimal(18, 6)
@@ -1399,11 +1425,16 @@ model SalaryComponent {
 
   structureComponents SalaryStructureComponent[]
   slipItems SalarySlipItem[]
+
+  @@unique([companyId, name])
+  @@index([companyId])
 }
 
 model SalaryStructure {
   id          String   @id @default(cuid())
-  name        String   @unique
+  companyId   String?
+  company     Company? @relation(fields: [companyId], references: [id])
+  name        String
   description String?
   currency    String   @default("USD")
   isActive    Boolean  @default(true)
@@ -1412,6 +1443,9 @@ model SalaryStructure {
 
   components  SalaryStructureComponent[]
   assignments SalaryStructureAssignment[]
+
+  @@unique([companyId, name])
+  @@index([companyId])
 }
 
 model SalaryStructureComponent {
@@ -1444,7 +1478,9 @@ model SalaryStructureAssignment {
 
 model PayrollEntry {
   id          String             @id @default(cuid())
-  payrollNo   String             @unique
+  companyId   String?
+  company     Company?           @relation(fields: [companyId], references: [id])
+  payrollNo   String
   month       Int
   year        Int
   postingDate DateTime           @default(now())
@@ -1458,7 +1494,9 @@ model PayrollEntry {
 
   salarySlips SalarySlip[]
 
-  @@unique([month, year])
+  @@unique([companyId, payrollNo])
+  @@unique([companyId, month, year])
+  @@index([companyId])
 }
 
 model SalarySlip {

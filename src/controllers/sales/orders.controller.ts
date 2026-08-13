@@ -170,6 +170,8 @@ export const updateSalesOrder = async (req : Request , res: Response)=>{
 export const updateSalesOrderStatus = async (req: Request, res: Response) => {
   try {
     const { status } = req.body;
+    const allowedStatuses = ['CONFIRMED', 'ON_HOLD', 'CANCELLED', 'CLOSED'];
+    if (!allowedStatuses.includes(status)) return error(res, 'Order progress is updated from submitted deliveries and invoices; this status cannot be set manually', 400);
     const order = await prisma.$transaction(async (tx) => {
       const existing = await tx.salesOrder.findUnique({ where: { id: req.params.id } });
       if (!existing) throw new Error('Sales order not found');
@@ -183,6 +185,9 @@ export const updateSalesOrderStatus = async (req: Request, res: Response) => {
         return tx.salesOrder.update({ where: { id: req.params.id }, data: { status, holdReason: req.body.holdReason || 'On hold' } });
       }
       if (status === 'CLOSED') {
+        if (!req.body.confirmClose || Number(existing.deliveredPercent) < 100 || Number(existing.billedPercent) < 100) {
+          throw new Error('Only a fully delivered and billed order can be closed with explicit confirmation');
+        }
         await releaseSalesOrderReservations(tx, existing.id);
         return tx.salesOrder.update({ where: { id: req.params.id }, data: { status } });
       }

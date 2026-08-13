@@ -67,14 +67,14 @@ export const generatePayrollEntry = async (req: Request, res: Response) => {
     const numericYear = Number(year);
     if (!numericMonth || !numericYear || numericMonth < 1 || numericMonth > 12) return error(res, 'Valid month and year are required', 400);
     const period = payrollPeriod(numericMonth, numericYear);
-    const existing = await prisma.payrollEntry.findUnique({
-      where: { month_year: { month: numericMonth, year: numericYear } },
+    const existing = await prisma.payrollEntry.findFirst({
+      where: { month: numericMonth, year: numericYear },
       include: { salarySlips: { include: { employee: { include: { user: { select: { firstName: true, lastName: true } } } }, items: true } } },
     });
     if (existing) return success(res, existing, 'Payroll entry already exists');
 
     const employees = await prisma.employee.findMany({
-      where: { status: { in: ['ACTIVE', 'PROBATION'] } },
+      where: { status: { in: ['ACTIVE', 'PROBATION'] }, user: { companyId: (req as any).user?.companyId || '__missing_company__' } },
       include: {
         user: { select: { firstName: true, lastName: true } },
         salaryAssignments: {
@@ -185,7 +185,7 @@ export const updatePayrollEntryStatus = async (req: Request, res: Response) => {
 
 export const getSalarySlips = async (req: any, res: Response) => {
   try {
-    const where: any = {};
+    const where: any = { employee: { user: { companyId: req.user?.companyId || '__missing_company__' } } };
     if (req.query.employeeId) where.employeeId = req.query.employeeId;
     if (req.query.month) where.month = Number(req.query.month);
     if (req.query.year) where.year = Number(req.query.year);
@@ -212,8 +212,8 @@ export const getMySalarySlips = async (req: any, res: Response) => {
 
 export const getSalarySlip = async (req: any, res: Response) => {
   try {
-    const item = await prisma.salarySlip.findUnique({
-      where: { id: req.params.id },
+    const item = await prisma.salarySlip.findFirst({
+      where: { id: req.params.id, employee: { user: { companyId: req.user?.companyId || '__missing_company__' } } },
       include: { employee: { include: employeeInclude }, items: true, payrollEntry: true },
     });
     if (!item) return error(res, 'Salary slip not found', 404);

@@ -32,6 +32,7 @@ export const getLeaveBalances = async (req: Request, res: Response) => {
     const allocations = await prisma.leaveAllocation.findMany({
       where: {
         employeeId,
+        employee: { user: { companyId: (req as any).user?.companyId || '__missing_company__' } },
         fromDate: { lte: asOf },
         toDate: { gte: asOf },
       },
@@ -60,7 +61,7 @@ export const getLeaveRequests = async (req: Request, res: Response) => {
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 20;
     const { employeeId, status } = req.query as any;
-    const where: any = {};
+    const where: any = { employee: { user: { companyId: (req as any).user?.companyId || '__missing_company__' } } };
     if (employeeId) where.employeeId = employeeId;
     if (status) where.status = status;
     if ((req as any).user?.role === 'EMPLOYEE') {
@@ -102,7 +103,7 @@ export const createLeaveRequest = async (req: Request, res: Response) => {
     if (endDate < startDate) return error(res, 'End date cannot be before start date', 400);
     body.days = Number(body.days || daysBetweenInclusive(startDate, endDate));
     const [employee, leaveType, overlap, allocation] = await Promise.all([
-      prisma.employee.findUnique({ where: { id: body.employeeId } }),
+      prisma.employee.findFirst({ where: { id: body.employeeId, user: { companyId: (req as any).user?.companyId || '__missing_company__' } } }),
       prisma.leaveType.findUnique({ where: { id: body.leaveTypeId } }),
       prisma.leaveRequest.findFirst({
         where: {

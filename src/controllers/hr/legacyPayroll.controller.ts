@@ -8,7 +8,7 @@ export const getPayrolls = async (req: Request, res: Response) => {
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 20;
     const { month, year, status, employeeId } = req.query as any;
-    const where: any = {};
+    const where: any = { employee: { user: { companyId: (req as any).user?.companyId || '__missing_company__' } } };
     if (month) where.month = parseInt(month);
     if (year) where.year = parseInt(year);
     if (status) where.status = status;
@@ -37,7 +37,7 @@ export const generatePayroll = async (req: Request, res: Response) => {
   try {
     const { month, year } = req.body;
     const employees = await prisma.employee.findMany({
-      where: { status: 'ACTIVE' },
+      where: { status: 'ACTIVE', user: { companyId: (req as any).user?.companyId || '__missing_company__' } },
       include: { user: { select: { firstName: true, lastName: true } } },
     });
 

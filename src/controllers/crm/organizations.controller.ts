@@ -9,7 +9,7 @@ export const getOrganizations = async (req: Request, res: Response) => {
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 20;
     const { search } = req.query as any;
-    const where: any = { isActive: true };
+    const where: any = { isActive: true, companyId: (req as AuthRequest).user?.companyId || '__missing_company__' };
     if (search) where.OR = [
       { name: { contains: search, mode: 'insensitive' } },
       { industry: { contains: search, mode: 'insensitive' } },
@@ -33,8 +33,8 @@ export const getOrganizations = async (req: Request, res: Response) => {
 
 export const getOrganization = async (req: Request, res: Response) => {
   try {
-    const organization = await prisma.crmOrganization.findUnique({
-      where: { id: req.params.id },
+    const organization = await prisma.crmOrganization.findFirst({
+      where: { id: req.params.id, companyId: (req as AuthRequest).user?.companyId || '__missing_company__' },
       include: {
         owner: { select: { firstName: true, lastName: true, email: true } },
         leads: { include: { assignedTo: { select: { firstName: true, lastName: true } } }, orderBy: { updatedAt: 'desc' } },

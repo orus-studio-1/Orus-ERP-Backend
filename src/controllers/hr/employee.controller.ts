@@ -46,8 +46,8 @@ export const getEmployees = async (req: Request, res: Response) => {
 
 export const getEmployee = async (req: Request, res: Response) => {
   try {
-    const emp = await prisma.employee.findUnique({
-      where: { id: req.params.id },
+    const emp = await prisma.employee.findFirst({
+      where: { id: req.params.id, user: { companyId: (req as any).user?.companyId || '__missing_company__' } },
       include: {
         user: { select: { firstName: true, lastName: true, email: true, phone: true, avatar: true } },
         department: true,
@@ -132,7 +132,7 @@ export const updateEmployee = async (req: Request, res: Response) => {
       companyEmail, noticePeriodDays, bankAccount, bankName, taxId,
     } = req.body;
 
-    const emp = await prisma.employee.findUnique({ where: { id: req.params.id } });
+    const emp = await prisma.employee.findFirst({ where: { id: req.params.id, user: { companyId: (req as any).user?.companyId || '__missing_company__' } } });
     if (!emp) return error(res, 'Employee not found', 404);
 
     const [, updated] = await Promise.all([
@@ -158,6 +158,8 @@ export const updateEmployee = async (req: Request, res: Response) => {
 
 export const deleteEmployee = async (req: Request, res: Response) => {
   try {
+    const existing = await prisma.employee.findFirst({ where: { id: req.params.id, user: { companyId: (req as any).user?.companyId || '__missing_company__' } } });
+    if (!existing) return error(res, 'Employee not found', 404);
     const employee = await prisma.employee.update({
       where: { id: req.params.id },
       data: { status: 'TERMINATED', terminatedDate: new Date() },

@@ -1,5 +1,14 @@
 import prisma from '../../lib/prisma';
 
+export function companyEmployeeWhere(companyId?: string | null) {
+  return companyId ? { user: { companyId } } : { id: '__missing_company__' };
+}
+
+export async function getCompanyEmployee(employeeId: string, companyId?: string | null) {
+  if (!employeeId || !companyId) return null;
+  return prisma.employee.findFirst({ where: { id: employeeId, user: { companyId } }, include: employeeInclude });
+}
+
 export const dayStart = (value = new Date()) => {
   const date = new Date(value);
   date.setHours(0, 0, 0, 0);
