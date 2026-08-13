@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { postStockLedger } from '../inventory/stockLedger.service';
 import { ensureLedgerAccount, postToLedger, reverseLedgerForVoucher } from '../accounting/ledger.service';
+import { currentCompanyId } from '../../utils/tenant';
 
 const D = Prisma.Decimal;
 
@@ -24,15 +25,103 @@ export function documentTotals(items: any[] = [], discount: any = 0, shippingAmo
 
 export async function nextNo(model: string, field: string, prefix: string, tx: any = prisma) {
   const count = await tx[model].count();
-  return `${prefix}-${String(count + 1).padStart(6, '0')}`;
+  const companyPrefix = (currentCompanyId() || 'GLOBAL').replace(/[^a-zA-Z0-9]/g, '').slice(-6).toUpperCase();
+  return `${companyPrefix}-${prefix}-${String(count + 1).padStart(6, '0')}`;
 }
 
 export function normalizeItems(items: any[] = []) {
   return items.filter((item) => item.productId && Number(item.quantity || item.receivedQty || 0) > 0);
 }
 
+export function materialRequestItems(items: any[] = []) {
+  return normalizeItems(items).map((item) => ({
+    productId: item.productId,
+    warehouseId: item.warehouseId || undefined,
+    quantity: item.quantity,
+    uom: item.uom || undefined,
+    stockUom: item.stockUom || undefined,
+    conversionFactor: item.conversionFactor || 1,
+    requiredBy: item.requiredBy ? new Date(item.requiredBy) : undefined,
+    description: item.description || undefined,
+  }));
+}
+
+export function rfqItems(items: any[] = []) {
+  return materialRequestItems(items).map(({ warehouseId: _warehouseId, ...item }) => item);
+}
+
+export function purchaseOrderItems(items: any[] = []) {
+  return normalizeItems(items).map((item) => ({
+    productId: item.productId,
+    description: item.description || undefined,
+    quantity: Number(item.quantity),
+    unitPrice: Number(item.unitPrice ?? item.rate ?? 0),
+    taxRate: Number(item.taxRate || 0),
+    discount: Number(item.discount || 0),
+    total: Number(lineAmount({ ...item, rate: item.unitPrice ?? item.rate }).total),
+    uom: item.uom || undefined,
+    stockUom: item.stockUom || undefined,
+    conversionFactor: item.conversionFactor || 1,
+    supplierItemCode: item.supplierItemCode || undefined,
+    supplierItemName: item.supplierItemName || undefined,
+  }));
+}
+
+export function supplierQuotationItems(items: any[] = []) {
+  return normalizeItems(items).map((item) => ({
+    productId: item.productId,
+    supplierItemCode: item.supplierItemCode || undefined,
+    description: item.description || undefined,
+    quantity: item.quantity,
+    uom: item.uom || undefined,
+    stockUom: item.stockUom || undefined,
+    conversionFactor: item.conversionFactor || 1,
+    rate: item.rate ?? item.unitPrice ?? 0,
+    taxRate: item.taxRate || 0,
+    discount: item.discount || 0,
+    amount: lineAmount({ ...item, rate: item.rate ?? item.unitPrice }).total,
+    deliveryDate: item.deliveryDate ? new Date(item.deliveryDate) : undefined,
+  }));
+}
+
+export function blanketOrderItems(items: any[] = []) {
+  return normalizeItems(items).map((item) => ({
+    productId: item.productId,
+    quantity: item.quantity,
+    rate: item.rate ?? item.unitPrice ?? 0,
+    uom: item.uom || undefined,
+    stockUom: item.stockUom || undefined,
+    conversionFactor: item.conversionFactor || 1,
+  }));
+}
+
+export function purchaseReceiptItems(items: any[] = []) {
+  return normalizeItems(items.map((item) => ({ ...item, quantity: item.receivedQty || item.quantity }))).map((item) => ({
+    purchaseOrderItemId: item.purchaseOrderItemId || undefined,
+    productId: item.productId,
+    warehouseId: item.warehouseId || undefined,
+    description: item.description || undefined,
+    receivedQty: item.receivedQty || item.quantity,
+    acceptedQty: item.acceptedQty ?? item.receivedQty ?? item.quantity,
+    rejectedQty: item.rejectedQty || 0,
+    rate: item.rate ?? item.unitPrice ?? 0,
+    valuationRate: item.valuationRate ?? item.rate ?? item.unitPrice ?? 0,
+    uom: item.uom || undefined,
+    stockUom: item.stockUom || undefined,
+    conversionFactor: item.conversionFactor || 1,
+    batchNo: item.batchNo || undefined,
+    serialNo: item.serialNo || undefined,
+    qualityStatus: item.qualityStatus || undefined,
+  }));
+}
+
+export function purchaseInvoiceItems(items: any[] = []) {
+  return purchaseOrderItems(items).map(({ supplierItemCode: _code, supplierItemName: _name, ...item }) => item);
+}
+
 export async function buyingSettings() {
-  return (prisma as any).buyingSettings.findFirst() || (prisma as any).buyingSettings.create({ data: {} });
+  const existing = await (prisma as any).buyingSettings.findFirst();
+  return existing || (prisma as any).buyingSettings.create({ data: {} });
 }
 
 export async function createPurchaseReceiptFromOrder(orderId: string, body: any = {}) {

@@ -25,6 +25,9 @@ export function handlePrismaError(res: Response, err: any) {
   if (code === 'P2011') {
     return error(res, 'A required field is missing.', 400);
   }
+  if (err?.name === 'PrismaClientValidationError') {
+    return error(res, 'The request contains an unsupported or missing field. Refresh the page and check the required values.', 400);
+  }
   if (code === 'P2021') {
     return error(res, 'Database table is missing. Run Prisma db push/migrate and restart the backend.', 400, process.env.NODE_ENV === 'production' ? undefined : err?.meta);
   }

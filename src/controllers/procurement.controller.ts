@@ -6,7 +6,8 @@ import { handlePrismaError } from '../utils/prismaError';
 import { generatePONo, generatePurchaseInvoiceNo } from '../utils/generate';
 import {
   buyingSettings, cancelVoucher, createPurchaseReceiptFromOrder, documentTotals, lineAmount,
-  nextNo, normalizeItems, poInclude, postSupplierPayment, purchaseInvoiceInclude,
+  blanketOrderItems, materialRequestItems, nextNo, normalizeItems, poInclude, postSupplierPayment,
+  purchaseInvoiceInclude, purchaseInvoiceItems, purchaseOrderItems, purchaseReceiptItems, rfqItems, supplierQuotationItems,
   purchaseReceiptInclude, refreshPurchaseOrderProgress, submitPurchaseInvoice, submitPurchaseReceipt,
 } from '../services/procurement/procurement.service';
 
@@ -48,7 +49,17 @@ export const getBuyingSettings = async (_req: Request, res: Response) => {
 export const updateBuyingSettings = async (req: Request, res: Response) => {
   try {
     const current = await buyingSettings();
-    return success(res, await (prisma as any).buyingSettings.update({ where: { id: current.id }, data: req.body }), 'Buying settings updated');
+    const data = {
+      defaultBuyingPriceListId: req.body.defaultBuyingPriceListId || null,
+      requirePurchaseOrderForInvoice: Boolean(req.body.requirePurchaseOrderForInvoice),
+      requirePurchaseReceiptForInvoice: Boolean(req.body.requirePurchaseReceiptForInvoice),
+      defaultRfqTerms: req.body.defaultRfqTerms || null,
+      overReceiptAllowancePercent: Number(req.body.overReceiptAllowancePercent || 0),
+      overBillingAllowancePercent: Number(req.body.overBillingAllowancePercent || 0),
+      autoCreateMaterialRequest: req.body.autoCreateMaterialRequest !== false,
+      defaultCurrency: req.body.defaultCurrency || 'USD',
+    };
+    return success(res, await (prisma as any).buyingSettings.update({ where: { id: current.id }, data }), 'Buying settings updated');
   } catch (err: any) { return handlePrismaError(res, err); }
 };
 
@@ -56,8 +67,11 @@ export const getPaymentTerms = async (req: Request, res: Response) => list(res, 
 
 export const createPaymentTerms = async (req: Request, res: Response) => {
   try {
-    const { terms = [], ...body } = req.body;
-    const template = await (prisma as any).paymentTermsTemplate.create({ data: { ...body, terms: { create: terms } }, include: { terms: true } });
+    const terms = (req.body.terms || []).filter((term: any) => term.label && Number(term.percentage) > 0).map((term: any, index: number) => ({ label: term.label, percentage: Number(term.percentage), dueAfterDays: Number(term.dueAfterDays || 0), rowOrder: Number(term.rowOrder ?? index) }));
+    if (!req.body.name || !terms.length) return error(res, 'Template name and at least one payment term are required', 400);
+    const totalPercentage = terms.reduce((sum: number, term: any) => sum + term.percentage, 0);
+    if (Math.abs(totalPercentage - 100) > 0.001) return error(res, 'Payment term percentages must total 100', 400);
+    const template = await (prisma as any).paymentTermsTemplate.create({ data: { name: String(req.body.name).trim(), description: req.body.description || undefined, isDefault: Boolean(req.body.isDefault), isActive: req.body.isActive !== false, terms: { create: terms } }, include: { terms: true } });
     return success(res, template, 'Payment terms template created', 201);
   } catch (err: any) { return handlePrismaError(res, err); }
 };
@@ -65,7 +79,11 @@ export const createPaymentTerms = async (req: Request, res: Response) => {
 export const getSupplierItems = async (req: Request, res: Response) => list(res, 'supplierItem', req, req.query.supplierId ? { supplierId: req.query.supplierId } : {}, { supplier: true, product: true });
 
 export const createSupplierItem = async (req: Request, res: Response) => {
-  try { return success(res, await (prisma as any).supplierItem.upsert({ where: { supplierId_productId: { supplierId: req.body.supplierId, productId: req.body.productId } }, update: req.body, create: req.body, include: { supplier: true, product: true } }), 'Supplier item mapping saved', 201); }
+  try {
+    if (!req.body.supplierId || !req.body.productId || !req.body.supplierItemCode) return error(res, 'Supplier, item, and supplier item code are required', 400);
+    const data = { supplierId: req.body.supplierId, productId: req.body.productId, supplierItemCode: req.body.supplierItemCode, supplierItemName: req.body.supplierItemName || undefined, leadTimeDays: Number(req.body.leadTimeDays || 0), minimumOrderQty: req.body.minimumOrderQty || 0 };
+    return success(res, await (prisma as any).supplierItem.upsert({ where: { supplierId_productId: { supplierId: data.supplierId, productId: data.productId } }, update: data, create: data, include: { supplier: true, product: true } }), 'Supplier item mapping saved', 201);
+  }
   catch (err: any) { return handlePrismaError(res, err); }
 };
 
@@ -73,10 +91,16 @@ export const getMaterialRequests = async (req: Request, res: Response) => list(r
 
 export const createMaterialRequest = async (req: Request, res: Response) => {
   try {
-    const items = normalizeItems(req.body.items);
+    const items = materialRequestItems(req.body.items);
     if (!items.length) return error(res, 'Add at least one material request item', 400);
     const requestNo = await nextNo('materialRequest', 'requestNo', 'MR');
-    const doc = await (prisma as any).materialRequest.create({ data: { ...req.body, requestNo, requiredBy: req.body.requiredBy ? new Date(req.body.requiredBy) : undefined, items: { create: items } }, include: { items: { include: { product: true, warehouse: true } } } });
+    const doc = await (prisma as any).materialRequest.create({ data: {
+      requestNo, type: req.body.type || 'PURCHASE', source: req.body.source || 'MANUAL',
+      requiredBy: req.body.requiredBy ? new Date(req.body.requiredBy) : undefined,
+      requestedById: (req as any).user?.id, costCenterId: req.body.costCenterId || undefined,
+      projectId: req.body.projectId || undefined, notes: req.body.notes || req.body.terms || undefined,
+      items: { create: items },
+    }, include: { items: { include: { product: true, warehouse: true } } } });
     return success(res, doc, 'Material request created', 201);
   } catch (err: any) { return handlePrismaError(res, err); }
 };
@@ -104,7 +128,14 @@ export const getRfqs = async (req: Request, res: Response) => list(res, 'request
 export const createRfq = async (req: Request, res: Response) => {
   try {
     const { items = [], suppliers = [], ...body } = req.body;
-    const doc = await (prisma as any).requestForQuotation.create({ data: { ...body, rfqNo: await nextNo('requestForQuotation', 'rfqNo', 'RFQ'), validUntil: body.validUntil ? new Date(body.validUntil) : undefined, items: { create: normalizeItems(items) }, suppliers: { create: suppliers.map((s: any) => ({ supplierId: s.supplierId || s, email: s.email })) } }, include: { items: true, suppliers: { include: { supplier: true } } } });
+    const cleanItems = rfqItems(items);
+    if (!cleanItems.length) return error(res, 'Add at least one RFQ item', 400);
+    const doc = await (prisma as any).requestForQuotation.create({ data: {
+      rfqNo: await nextNo('requestForQuotation', 'rfqNo', 'RFQ'), materialRequestId: body.materialRequestId || undefined,
+      transactionDate: body.transactionDate ? new Date(body.transactionDate) : new Date(), validUntil: body.validUntil ? new Date(body.validUntil) : undefined,
+      terms: body.terms || body.notes || undefined, message: body.message || undefined,
+      items: { create: cleanItems }, suppliers: { create: suppliers.filter(Boolean).map((s: any) => ({ supplierId: s.supplierId || s, email: s.email })) },
+    }, include: { items: true, suppliers: { include: { supplier: true } } } });
     return success(res, doc, 'RFQ created', 201);
   } catch (err: any) { return handlePrismaError(res, err); }
 };
@@ -128,9 +159,17 @@ export const getSupplierQuotations = async (req: Request, res: Response) => list
 
 export const createSupplierQuotation = async (req: Request, res: Response) => {
   try {
-    const items = normalizeItems(req.body.items);
-    const totals = documentTotals(items.map((item: any) => ({ ...item, rate: item.rate ?? item.unitPrice })), req.body.discount, req.body.shippingAmount, req.body.exchangeRate || 1);
-    const doc = await (prisma as any).supplierQuotation.create({ data: { ...req.body, quotationNo: await nextNo('supplierQuotation', 'quotationNo', 'SQ'), date: req.body.date ? new Date(req.body.date) : new Date(), validUntil: req.body.validUntil ? new Date(req.body.validUntil) : undefined, subtotal: totals.subtotal, taxAmount: totals.taxAmount, shippingAmount: totals.shippingAmount, total: totals.total, items: { create: items.map((item: any) => ({ ...item, rate: item.rate ?? item.unitPrice, amount: lineAmount({ ...item, rate: item.rate ?? item.unitPrice }).total })) } }, include: { supplier: true, items: { include: { product: true } } } });
+    const items = supplierQuotationItems(req.body.items);
+    if (!req.body.supplierId || !items.length) return error(res, 'Supplier and at least one quotation item are required', 400);
+    const totals = documentTotals(items, req.body.discount, req.body.shippingAmount, req.body.exchangeRate || 1);
+    const doc = await (prisma as any).supplierQuotation.create({ data: {
+      quotationNo: await nextNo('supplierQuotation', 'quotationNo', 'SQ'), rfqId: req.body.rfqId || undefined,
+      supplierId: req.body.supplierId, date: req.body.date ? new Date(req.body.date) : new Date(),
+      validUntil: req.body.validUntil ? new Date(req.body.validUntil) : undefined, currency: req.body.currency || 'USD',
+      exchangeRate: req.body.exchangeRate || 1, subtotal: totals.subtotal, taxAmount: totals.taxAmount,
+      shippingAmount: totals.shippingAmount, discount: req.body.discount || 0, total: totals.total,
+      terms: req.body.terms || undefined, notes: req.body.notes || undefined, items: { create: items },
+    }, include: { supplier: true, items: { include: { product: true } } } });
     return success(res, doc, 'Supplier quotation created', 201);
   } catch (err: any) { return handlePrismaError(res, err); }
 };
@@ -152,7 +191,16 @@ export const createPurchaseOrderFromSupplierQuotation = async (req: Request, res
 export const getBlanketPurchaseOrders = async (req: Request, res: Response) => list(res, 'blanketPurchaseOrder', req, {}, { supplier: true, items: { include: { product: true } }, purchaseOrders: true });
 
 export const createBlanketPurchaseOrder = async (req: Request, res: Response) => {
-  try { return success(res, await (prisma as any).blanketPurchaseOrder.create({ data: { ...req.body, agreementNo: await nextNo('blanketPurchaseOrder', 'agreementNo', 'BPO', prisma as any), validFrom: new Date(req.body.validFrom), validTo: new Date(req.body.validTo), items: { create: req.body.items || [] } }, include: { supplier: true, items: { include: { product: true } } } }), 'Blanket purchase order created', 201); }
+  try {
+    const items = blanketOrderItems(req.body.items);
+    if (!req.body.supplierId || !req.body.validFrom || !req.body.validTo || !items.length) return error(res, 'Supplier, validity dates, and at least one item are required', 400);
+    if (new Date(req.body.validTo) < new Date(req.body.validFrom)) return error(res, 'Valid To cannot be before Valid From', 400);
+    return success(res, await (prisma as any).blanketPurchaseOrder.create({ data: {
+      agreementNo: await nextNo('blanketPurchaseOrder', 'agreementNo', 'BPO', prisma as any), supplierId: req.body.supplierId,
+      validFrom: new Date(req.body.validFrom), validTo: new Date(req.body.validTo), currency: req.body.currency || 'USD',
+      terms: req.body.terms || req.body.notes || undefined, items: { create: items },
+    }, include: { supplier: true, items: { include: { product: true } } } }), 'Blanket purchase order created', 201);
+  }
   catch (err: any) { return handlePrismaError(res, err); }
 };
 
@@ -175,7 +223,7 @@ export const getPurchaseOrder = async (req: Request, res: Response) => {
 export const createPurchaseOrder = async (req: Request, res: Response) => {
   try {
     const { supplierId, date, expectedDate, items, notes, terms, currency, discount, shippingAmount, exchangeRate, ...links } = req.body;
-    const cleanItems = normalizeItems(items);
+    const cleanItems = purchaseOrderItems(items);
     if (!supplierId || !cleanItems.length) return error(res, 'Supplier and at least one item are required', 400);
     const totals = documentTotals(cleanItems, discount, shippingAmount, exchangeRate || 1);
     const po = await prisma.purchaseOrder.create({
@@ -183,7 +231,7 @@ export const createPurchaseOrder = async (req: Request, res: Response) => {
         ...links, orderNo: await generatePONo(), supplierId, date: date ? new Date(date) : new Date(), expectedDate: expectedDate ? new Date(expectedDate) : undefined,
         subtotal: Number(totals.subtotal), taxAmount: Number(totals.taxAmount), shippingAmount: Number(totals.shippingAmount), total: Number(totals.total), baseTotal: totals.baseTotal,
         discount: discount || 0, currency: currency || 'USD', exchangeRate: exchangeRate || 1, notes, terms,
-        items: { create: cleanItems.map((item: any) => ({ ...item, total: Number(lineAmount({ ...item, rate: item.unitPrice }).total) })) },
+        items: { create: cleanItems },
       } as any,
       include: poInclude,
     });
@@ -213,9 +261,17 @@ export const getPurchaseReceipts = async (req: Request, res: Response) => list(r
 export const createPurchaseReceipt = async (req: Request, res: Response) => {
   try {
     if (req.body.purchaseOrderId) return success(res, await createPurchaseReceiptFromOrder(req.body.purchaseOrderId, req.body), 'Purchase receipt created from PO', 201);
-    const items = normalizeItems((req.body.items || []).map((item: any) => ({ ...item, quantity: item.receivedQty || item.quantity })));
+    const items = purchaseReceiptItems(req.body.items || []);
+    if (!req.body.supplierId || !items.length) return error(res, 'Supplier and at least one receipt item are required', 400);
     const totals = documentTotals(items.map((item: any) => ({ quantity: item.receivedQty || item.quantity, rate: item.rate })));
-    return success(res, await (prisma as any).purchaseReceipt.create({ data: { ...req.body, receiptNo: await nextNo('purchaseReceipt', 'receiptNo', 'PREC'), postingDate: req.body.postingDate ? new Date(req.body.postingDate) : new Date(), acceptedQty: items.reduce((s, i) => s.plus(i.acceptedQty || i.receivedQty || i.quantity || 0), new D(0)), rejectedQty: items.reduce((s, i) => s.plus(i.rejectedQty || 0), new D(0)), subtotal: totals.subtotal, items: { create: items } }, include: purchaseReceiptInclude }), 'Purchase receipt created', 201);
+    return success(res, await (prisma as any).purchaseReceipt.create({ data: {
+      receiptNo: await nextNo('purchaseReceipt', 'receiptNo', 'PREC'), supplierId: req.body.supplierId,
+      postingDate: req.body.postingDate ? new Date(req.body.postingDate) : new Date(), currency: req.body.currency || 'USD',
+      exchangeRate: req.body.exchangeRate || 1, costCenterId: req.body.costCenterId || undefined,
+      projectId: req.body.projectId || undefined, notes: req.body.notes || req.body.terms || undefined,
+      acceptedQty: items.reduce((s, i) => s.plus(i.acceptedQty || i.receivedQty || 0), new D(0)),
+      rejectedQty: items.reduce((s, i) => s.plus(i.rejectedQty || 0), new D(0)), subtotal: totals.subtotal, items: { create: items },
+    }, include: purchaseReceiptInclude }), 'Purchase receipt created', 201);
   } catch (err: any) { return handlePrismaError(res, err); }
 };
 export const createPurchaseReceiptFromPurchaseOrder = async (req: Request, res: Response) => {
@@ -232,7 +288,18 @@ export const updatePurchaseReceiptStatus = async (req: Request, res: Response) =
 
 export const getQualityInspections = async (req: Request, res: Response) => list(res, 'qualityInspection', req, req.query.status ? { status: req.query.status } : {}, { purchaseReceipt: true, product: true });
 export const createQualityInspection = async (req: Request, res: Response) => {
-  try { return success(res, await (prisma as any).qualityInspection.create({ data: { ...req.body, inspectionNo: await nextNo('qualityInspection', 'inspectionNo', 'QI') }, include: { purchaseReceipt: true, product: true } }), 'Quality inspection created', 201); }
+  try {
+    if (!req.body.purchaseReceiptId && !req.body.productId) return error(res, 'Purchase receipt or product is required', 400);
+    const inspectedQty = Number(req.body.inspectedQty || 0);
+    const acceptedQty = Number(req.body.acceptedQty || 0);
+    const rejectedQty = Number(req.body.rejectedQty || 0);
+    if (acceptedQty + rejectedQty > inspectedQty) return error(res, 'Accepted and rejected quantities cannot exceed inspected quantity', 400);
+    return success(res, await (prisma as any).qualityInspection.create({ data: {
+      inspectionNo: await nextNo('qualityInspection', 'inspectionNo', 'QI'), purchaseReceiptId: req.body.purchaseReceiptId || undefined,
+      productId: req.body.productId || undefined, inspectedQty, acceptedQty, rejectedQty,
+      inspectedById: (req as any).user?.id, remarks: req.body.remarks || req.body.notes || req.body.terms || undefined,
+    }, include: { purchaseReceipt: true, product: true } }), 'Quality inspection created', 201);
+  }
   catch (err: any) { return handlePrismaError(res, err); }
 };
 
@@ -241,7 +308,13 @@ export const createLandedCostVoucher = async (req: Request, res: Response) => {
   try {
     const charges = req.body.charges || [];
     const totalCharges = charges.reduce((sum: any, c: any) => sum.plus(c.amount || 0), new D(0));
-    const doc = await (prisma as any).landedCostVoucher.create({ data: { ...req.body, voucherNo: await nextNo('landedCostVoucher', 'voucherNo', 'LCV'), totalCharges, charges: { create: charges } }, include: { purchaseReceipt: { include: { items: true } }, charges: true, allocations: true } });
+    if (!req.body.purchaseReceiptId || !charges.length || totalCharges.lte(0)) return error(res, 'Purchase receipt and at least one positive landed charge are required', 400);
+    const cleanCharges = charges.filter((charge: any) => Number(charge.amount) > 0).map((charge: any) => ({ type: charge.type || 'OTHER', description: charge.description || undefined, amount: charge.amount, accountId: charge.accountId || undefined }));
+    const doc = await (prisma as any).landedCostVoucher.create({ data: {
+      voucherNo: await nextNo('landedCostVoucher', 'voucherNo', 'LCV'), purchaseReceiptId: req.body.purchaseReceiptId,
+      allocationBasis: req.body.allocationBasis || 'VALUE', postingDate: req.body.postingDate ? new Date(req.body.postingDate) : new Date(),
+      notes: req.body.notes || req.body.terms || undefined, totalCharges, charges: { create: cleanCharges },
+    }, include: { purchaseReceipt: { include: { items: true } }, charges: true, allocations: true } });
     return success(res, doc, 'Landed cost voucher created', 201);
   } catch (err: any) { return handlePrismaError(res, err); }
 };
@@ -271,9 +344,19 @@ export const createPurchaseInvoice = async (req: Request, res: Response) => {
     const settings = await buyingSettings();
     if ((settings as any).requirePurchaseOrderForInvoice && !req.body.purchaseOrderId) return error(res, 'Purchase Order is required before Purchase Invoice', 400);
     if ((settings as any).requirePurchaseReceiptForInvoice && !req.body.purchaseReceiptId) return error(res, 'Purchase Receipt is required before Purchase Invoice', 400);
-    const items = normalizeItems(req.body.items);
+    const items = purchaseInvoiceItems(req.body.items);
+    if (!req.body.supplierId || !items.length) return error(res, 'Supplier and at least one invoice item are required', 400);
     const totals = documentTotals(items, req.body.discount, req.body.shippingAmount, req.body.exchangeRate || 1);
-    const inv = await prisma.purchaseInvoice.create({ data: { ...req.body, invoiceNo: await generatePurchaseInvoiceNo(), date: req.body.date ? new Date(req.body.date) : new Date(), dueDate: req.body.dueDate ? new Date(req.body.dueDate) : undefined, subtotal: Number(totals.subtotal), taxAmount: Number(totals.taxAmount), shippingAmount: Number(totals.shippingAmount), total: Number(totals.total), baseTotal: totals.baseTotal, outstandingAmount: totals.total, items: { create: items.map((item: any) => ({ ...item, total: Number(lineAmount({ ...item, rate: item.unitPrice }).total) })) } } as any, include: purchaseInvoiceInclude });
+    const inv = await prisma.purchaseInvoice.create({ data: {
+      invoiceNo: await generatePurchaseInvoiceNo(), supplierId: req.body.supplierId,
+      purchaseOrderId: req.body.purchaseOrderId || undefined, purchaseReceiptId: req.body.purchaseReceiptId || undefined,
+      date: req.body.date ? new Date(req.body.date) : new Date(), dueDate: req.body.dueDate ? new Date(req.body.dueDate) : undefined,
+      subtotal: Number(totals.subtotal), taxAmount: Number(totals.taxAmount), shippingAmount: Number(totals.shippingAmount),
+      discount: Number(req.body.discount || 0), total: Number(totals.total), baseTotal: totals.baseTotal,
+      outstandingAmount: totals.total, currency: req.body.currency || 'USD', exchangeRate: req.body.exchangeRate || 1,
+      costCenterId: req.body.costCenterId || undefined, projectId: req.body.projectId || undefined,
+      notes: req.body.notes || req.body.terms || undefined, items: { create: items },
+    } as any, include: purchaseInvoiceInclude });
     return success(res, inv, 'Purchase invoice created', 201);
   } catch (err: any) { return handlePrismaError(res, err); }
 };
@@ -293,7 +376,15 @@ export const getSupplierPayments = async (req: Request, res: Response) => list(r
 export const createSupplierPayment = async (req: Request, res: Response) => {
   try {
     const amount = new D(req.body.amount || 0);
-    const doc = await (prisma as any).supplierPayment.create({ data: { ...req.body, paymentNo: await nextNo('supplierPayment', 'paymentNo', 'SPAY'), date: req.body.date ? new Date(req.body.date) : new Date(), amount, unallocatedAmount: amount }, include: { supplier: true, purchaseOrder: true, purchaseInvoice: true } });
+    if (!req.body.supplierId || amount.lte(0)) return error(res, 'Supplier and a positive payment amount are required', 400);
+    const doc = await (prisma as any).supplierPayment.create({ data: {
+      paymentNo: await nextNo('supplierPayment', 'paymentNo', 'SPAY'), supplierId: req.body.supplierId,
+      purchaseOrderId: req.body.purchaseOrderId || undefined, purchaseInvoiceId: req.body.purchaseInvoiceId || undefined,
+      type: req.body.type || 'INVOICE_PAYMENT', date: req.body.date ? new Date(req.body.date) : new Date(), amount,
+      unallocatedAmount: amount, currency: req.body.currency || 'USD', exchangeRate: req.body.exchangeRate || 1,
+      method: req.body.method || 'BANK_TRANSFER', reference: req.body.reference || undefined,
+      notes: req.body.notes || req.body.terms || undefined,
+    }, include: { supplier: true, purchaseOrder: true, purchaseInvoice: true } });
     return success(res, doc, 'Supplier payment created', 201);
   } catch (err: any) { return handlePrismaError(res, err); }
 };
@@ -306,7 +397,15 @@ export const updateSupplierPaymentStatus = async (req: Request, res: Response) =
 };
 
 export const addSupplierCommunication = async (req: Request, res: Response) => {
-  try { return success(res, await (prisma as any).supplierCommunicationLog.create({ data: req.body }), 'Communication logged', 201); }
+  try {
+    if (!req.body.message) return error(res, 'Communication message is required', 400);
+    return success(res, await (prisma as any).supplierCommunicationLog.create({ data: {
+      supplierId: req.body.supplierId || undefined, rfqId: req.body.rfqId || undefined,
+      supplierQuotationId: req.body.supplierQuotationId || undefined, channel: req.body.channel || 'EMAIL',
+      subject: req.body.subject || undefined, message: req.body.message, direction: req.body.direction || 'OUTBOUND',
+      sentAt: req.body.sentAt ? new Date(req.body.sentAt) : new Date(), createdById: (req as any).user?.id,
+    } }), 'Communication logged', 201);
+  }
   catch (err: any) { return handlePrismaError(res, err); }
 };
 
