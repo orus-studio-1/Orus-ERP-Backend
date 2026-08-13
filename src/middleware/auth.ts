@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import { error } from '../utils/response';
 import { computeEffectiveAccess, firstPathSegment, getActionForRequest, hasPermission, EffectiveAccess } from '../utils/accessControl';
 import { runWithTenant } from '../utils/tenant';
+import prisma from '../lib/prisma';
 
 export interface AuthRequest extends Request {
   user?: { id: string; email: string; role: string; companyId?: string | null };
@@ -16,14 +17,30 @@ export const authenticate = async (req: AuthRequest, res: Response, next: NextFu
     error(res, 'No token provided', 401);
     return;
   }
+  let decoded: any;
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as any;
-    req.user = { id: decoded.id, email: decoded.email, role: decoded.role, companyId: decoded.companyId };
+    decoded = jwt.verify(token, process.env.JWT_SECRET!) as any;
+  } catch {
+    error(res, 'Invalid or expired token', 401);
+    return;
+  }
+
+  try {
+    const currentUser = await prisma.user.findUnique({
+      where: { id: decoded.id },
+      select: { id: true, email: true, role: true, companyId: true, isActive: true },
+    });
+    if (!currentUser || !currentUser.isActive) {
+      error(res, 'Account is inactive or no longer exists', 401);
+      return;
+    }
+    req.user = { id: currentUser.id, email: currentUser.email, role: currentUser.role, companyId: currentUser.companyId };
     req.access = await computeEffectiveAccess(decoded.id);
     if (!req.user.companyId && req.access.companyId) req.user.companyId = req.access.companyId;
     runWithTenant(req.user.companyId, () => next());
-  } catch {
-    error(res, 'Invalid or expired token', 401);
+  } catch (err: any) {
+    console.error('Unable to load authenticated session:', err);
+    error(res, 'Unable to load your session. Please try again.', 500);
   }
 };
 
