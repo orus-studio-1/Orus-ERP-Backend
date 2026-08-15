@@ -17,7 +17,10 @@ export const getWarehouses = async (req: Request, res: Response) => {
 
 export const createWarehouse = async (req: Request, res: Response) => {
   try {
-    const wh = await prisma.warehouse.create({ data: req.body });
+    const name = String(req.body.name || '').trim();
+    const code = String(req.body.code || '').trim().toUpperCase();
+    if (!name || !code) return error(res, 'Warehouse name and code are required.', 400);
+    const wh = await prisma.warehouse.create({ data: { ...req.body, name, code } });
     return success(res, wh, 'Warehouse created', 201);
   } catch (err: any) {
     return handlePrismaError(res, err);

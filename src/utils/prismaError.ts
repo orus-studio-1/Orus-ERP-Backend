@@ -10,7 +10,8 @@ export function handlePrismaError(res: Response, err: any) {
   });
 
   if (code === 'P2002') {
-    const field = err?.meta?.target?.[0] || 'field';
+    const targets = Array.isArray(err?.meta?.target) ? err.meta.target : [];
+    const field = targets.find((target: string) => target !== 'companyId') || targets[0] || 'field';
     return error(res, `A record with this ${field} already exists.`, 400);
   }
   if (code === 'P2003') {

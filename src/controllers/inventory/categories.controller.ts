@@ -17,7 +17,10 @@ export const getCategories = async (req: Request, res: Response) => {
 
 export const createCategory = async (req: Request, res: Response) => {
   try {
-    const cat = await prisma.category.create({ data: req.body });
+    const name = String(req.body.name || '').trim();
+    const code = String(req.body.code || '').trim().toUpperCase();
+    if (!name || !code) return error(res, 'Category name and code are required.', 400);
+    const cat = await prisma.category.create({ data: { ...req.body, name, code, parentId: req.body.parentId || null } });
     return success(res, cat, 'Category created', 201);
   } catch (err: any) {
     return handlePrismaError(res, err);
