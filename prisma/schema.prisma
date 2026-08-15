@@ -218,7 +218,7 @@ model AccessAuditLog {
 model Account {
   id                        String       @id @default(cuid())
   companyId                 String?
-  code                      String       @unique
+  code                      String
   name                      String
   type                      AccountType
   subType                   String?
@@ -255,6 +255,7 @@ model Account {
   fixedAssets              FixedAsset[]           @relation("AssetAccount")
 
   @@index([companyId])
+  @@unique([companyId, code])
 }
 
 enum AccountType {
