@@ -237,6 +237,9 @@ export async function postSupplierPayment(paymentId: string) {
     const payment = await tx.supplierPayment.findUnique({ where: { id: paymentId }, include: { purchaseInvoice: true, purchaseOrder: true } });
     if (!payment) throw new Error('Supplier payment not found');
     if (payment.status !== 'DRAFT') throw new Error('Only draft supplier payments can be submitted');
+    if (!payment.supplierId) throw new Error('Supplier payment has no supplier');
+    if (payment.purchaseInvoiceId && !payment.purchaseInvoice) throw new Error('The linked purchase invoice no longer exists or is not accessible');
+    if (payment.purchaseOrderId && !payment.purchaseOrder) throw new Error('The linked purchase order no longer exists or is not accessible');
     const bank = await ensureLedgerAccount(tx, '1000', 'Cash / Bank', 'ASSET');
     const ap = await ensureLedgerAccount(tx, '2000', 'Accounts Payable', 'LIABILITY', { isDefaultPayable: true });
     await postToLedger(tx, {
@@ -250,8 +253,10 @@ export async function postSupplierPayment(paymentId: string) {
       ],
     });
     if (payment.purchaseInvoiceId) {
-      const paid = new D(payment.purchaseInvoice.amountPaid || 0).plus(payment.amount);
-      const outstanding = D.max(new D(payment.purchaseInvoice.total || 0).minus(paid), new D(0));
+      const invoice = payment.purchaseInvoice;
+      if (invoice.supplierId !== payment.supplierId) throw new Error('Payment supplier does not match the linked purchase invoice supplier');
+      const paid = new D(invoice.amountPaid || 0).plus(payment.amount);
+      const outstanding = D.max(new D(invoice.total || 0).minus(paid), new D(0));
       await tx.purchaseInvoice.update({ where: { id: payment.purchaseInvoiceId }, data: { amountPaid: Number(paid.toString()), outstandingAmount: outstanding, status: outstanding.eq(0) ? 'PAID' : 'PARTIAL' } });
     }
     if (payment.purchaseOrderId && payment.type === 'ADVANCE') {

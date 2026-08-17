@@ -2,7 +2,7 @@ import { Router } from 'express';
 import {
   getLeads, getLead, createLead, updateLead, deleteLead, convertLead, previewLeadImport, importLeads, getLeadImports, getLeadImport,
   qualifyLead, markLeadLost,
-  getContacts, getContact, createContact, updateContact, deleteContact,
+  getContacts, getContact, createContact, updateContact, deleteContact, openLeadContact,
   getOpportunities, getOpportunity, createOpportunity, updateOpportunity, deleteOpportunity, getPipeline, createOpportunityErpDocs,
   getActivities, getLeadActivities, createActivity, createLeadActivity, updateActivity, completeActivity, cancelActivity, deleteActivity,
   getOrganizations, getOrganization, createOrganization, updateOrganization, deleteOrganization,
@@ -25,6 +25,7 @@ router.route('/leads').get(getLeads).post(createLead);
 router.post('/leads/:id/qualify', qualifyLead);
 router.post('/leads/:id/mark-lost', markLeadLost);
 router.post('/leads/:id/convert', convertLead);
+router.post('/leads/:id/contact', openLeadContact);
 router.route('/leads/:id/activities').get(getLeadActivities).post(createLeadActivity);
 router.route('/leads/:id').get(getLead).put(updateLead).delete(deleteLead);
 

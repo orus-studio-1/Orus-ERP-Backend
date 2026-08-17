@@ -100,6 +100,46 @@ export const createContact = async (req: AuthRequest, res: Response) => {
   }
 };
 
+export const openLeadContact = async (req: AuthRequest, res: Response) => {
+  try {
+    const contact = await prisma.$transaction(async (tx) => {
+      const lead = await tx.lead.findUnique({ where: { id: req.params.id }, include: { contacts: { where: { isActive: true }, orderBy: { createdAt: 'asc' }, take: 1 } } });
+      if (!lead) throw new Error('Lead not found');
+      if (lead.contacts[0]) return lead.contacts[0];
+
+      const organization = lead.organizationId ? null : await ensureOrganization(tx, lead, req.user?.companyId, req.user?.id);
+      const created = await tx.contact.create({
+        data: {
+          firstName: lead.firstName,
+          lastName: lead.lastName,
+          email: lead.email,
+          phone: lead.phone,
+          company: lead.company,
+          leadId: lead.id,
+          organizationId: lead.organizationId || organization?.id,
+          city: lead.city,
+          country: lead.country,
+          notes: lead.notes,
+        },
+      });
+      await tx.lead.update({ where: { id: lead.id }, data: { status: lead.status === 'NEW' ? 'CONTACTED' : lead.status, lastContactedAt: new Date() } });
+      await logCrmActivity(tx, req.user!.id, {
+        type: 'NOTE',
+        subject: 'Contact profile opened from lead',
+        description: `Created the primary contact profile for ${lead.title}`,
+        leadId: lead.id,
+        contactId: created.id,
+        organizationId: created.organizationId,
+      });
+      return created;
+    });
+    return success(res, contact, 'Lead contact ready');
+  } catch (err: any) {
+    if (err.message === 'Lead not found') return error(res, err.message, 404);
+    return handlePrismaError(res, err);
+  }
+};
+
 export const updateContact = async (req: Request, res: Response) => {
   try {
     const contact = await prisma.contact.update({ where: { id: req.params.id }, data: req.body });
