@@ -1,7 +1,10 @@
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import pg from 'pg';
+import dotenv from 'dotenv';
 import { applyTenantToPrismaArgs } from '../utils/tenant';
+
+dotenv.config();
 
 const globalForPrisma = globalThis as unknown as { prisma: PrismaClient };
 

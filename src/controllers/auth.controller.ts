@@ -1,4 +1,4 @@
-﻿import { Request, Response } from 'express';
+import { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import prisma from '../lib/prisma';
@@ -7,35 +7,68 @@ import { handlePrismaError } from '../utils/prismaError';
 import { AuthRequest } from '../middleware/auth';
 import { computeEffectiveAccess, ensureCompanyDefaultRoles } from '../utils/accessControl';
 import { generateEmployeeId } from '../utils/generate';
+import { validateSlug, slugify } from '../utils/slug';
 
 async function buildAuthPayload(user: any) {
   const access = await computeEffectiveAccess(user.id);
+  let companySlug = user.company?.slug || null;
+  if (!companySlug && user.companyId) {
+    const comp = await prisma.company.findUnique({
+      where: { id: user.companyId },
+      select: { slug: true },
+    });
+    companySlug = comp?.slug || null;
+  }
   const token = jwt.sign(
-    { id: user.id, email: user.email, role: user.role, companyId: user.companyId },
+    {
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      companyId: user.companyId,
+      companySlug,
+    },
     process.env.JWT_SECRET!,
     { expiresIn: (process.env.JWT_EXPIRES_IN || '7d') as any }
   );
   const { password: _, ...userData } = user;
   return {
-    user: { ...userData, access },
+    user: { ...userData, access, companySlug },
     token,
   };
 }
 
 export const register = async (req: Request, res: Response) => {
   try {
-    const { password, firstName, lastName, phone, companyName, companyPhone, country, currency } = req.body;
+    const { password, firstName, lastName, phone, companyName, companyPhone, country, currency, slug } = req.body;
     const email = String(req.body.email || '').trim().toLowerCase();
     if (!email) return error(res, 'Email is required', 400);
     const exists = await prisma.user.findUnique({ where: { email } });
     if (exists) return error(res, 'Email already registered', 400);
     if (!companyName) return error(res, 'Company name is required', 400);
 
+    const slugValidation = validateSlug(slug || companyName);
+    if (!slugValidation.valid) {
+      return error(res, slugValidation.error || 'Invalid workspace subdomain', 400);
+    }
+    const finalSlug = slugValidation.slug;
+
+    const slugExists = await prisma.company.findUnique({ where: { slug: finalSlug } });
+    if (slugExists) {
+      return error(res, 'Workspace URL is already taken. Please choose another.', 409);
+    }
+
     const hashed = await bcrypt.hash(password, 10);
     const employeeId = await generateEmployeeId();
     const user = await prisma.$transaction(async (tx) => {
       const company = await tx.company.create({
-        data: { name: companyName, email, phone: companyPhone || phone, country, currency: currency || 'USD' },
+        data: {
+          name: companyName,
+          slug: finalSlug,
+          email,
+          phone: companyPhone || phone,
+          country,
+          currency: currency || 'USD',
+        },
       });
       const createdUser = await tx.user.create({
         data: { email, password: hashed, firstName, lastName, phone, role: 'SUPER_ADMIN', companyId: company.id },
@@ -58,7 +91,7 @@ export const register = async (req: Request, res: Response) => {
           actorId: createdUser.id,
           targetUserId: createdUser.id,
           action: 'COMPANY_REGISTER',
-          message: `Created company ${company.name} and assigned Super Admin`,
+          message: `Created company ${company.name} (${finalSlug}) and assigned Super Admin`,
         },
       });
       return tx.user.findUnique({
@@ -92,8 +125,14 @@ export const register = async (req: Request, res: Response) => {
 
 export const login = async (req: Request, res: Response) => {
   try {
-    const { email, password } = req.body;
-    const user = await prisma.user.findUnique({ where: { email } });
+    const email = String(req.body.email || '').trim().toLowerCase();
+    const { password } = req.body;
+    if (!email || !password) return error(res, 'Email and password are required', 400);
+
+    const user = await prisma.user.findUnique({
+      where: { email },
+      include: { company: true },
+    });
     if (!user || !user.isActive) return error(res, 'Invalid credentials', 401);
 
     const valid = await bcrypt.compare(password, user.password);
@@ -103,6 +142,56 @@ export const login = async (req: Request, res: Response) => {
     }
 
     return success(res, await buildAuthPayload(user), 'Login successful');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
+export const checkSlugAvailability = async (req: Request, res: Response) => {
+  try {
+    const rawSlug = String(req.params.slug || req.query.slug || '').trim();
+    const validation = validateSlug(rawSlug);
+    if (!validation.valid) {
+      return error(res, validation.error || 'Invalid workspace slug', 400);
+    }
+
+    const existing = await prisma.company.findUnique({
+      where: { slug: validation.slug },
+      select: { id: true, slug: true },
+    });
+
+    if (existing) {
+      return error(res, 'Workspace URL is already taken', 409);
+    }
+
+    return success(res, { available: true, slug: validation.slug }, 'Workspace URL is available');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
+export const getWorkspaceInfo = async (req: Request, res: Response) => {
+  try {
+    const rawSlug = String(req.params.slug || '').trim().toLowerCase();
+    if (!rawSlug) return error(res, 'Workspace slug is required', 400);
+
+    const company = await prisma.company.findUnique({
+      where: { slug: slugify(rawSlug) },
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        logo: true,
+        currency: true,
+        createdAt: true,
+      },
+    });
+
+    if (!company) {
+      return error(res, 'Workspace not found', 404);
+    }
+
+    return success(res, company, 'Workspace details');
   } catch (err: any) {
     return handlePrismaError(res, err);
   }

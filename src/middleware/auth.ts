@@ -6,7 +6,7 @@ import { runWithTenant } from '../utils/tenant';
 import prisma from '../lib/prisma';
 
 export interface AuthRequest extends Request {
-  user?: { id: string; email: string; role: string; companyId?: string | null };
+  user?: { id: string; email: string; role: string; companyId?: string | null; companySlug?: string | null };
   access?: EffectiveAccess;
   permissionGatePassed?: boolean;
 }
@@ -28,13 +28,26 @@ export const authenticate = async (req: AuthRequest, res: Response, next: NextFu
   try {
     const currentUser = await prisma.user.findUnique({
       where: { id: decoded.id },
-      select: { id: true, email: true, role: true, companyId: true, isActive: true },
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        companyId: true,
+        isActive: true,
+        company: { select: { slug: true } },
+      },
     });
     if (!currentUser || !currentUser.isActive) {
       error(res, 'Account is inactive or no longer exists', 401);
       return;
     }
-    req.user = { id: currentUser.id, email: currentUser.email, role: currentUser.role, companyId: currentUser.companyId };
+    req.user = {
+      id: currentUser.id,
+      email: currentUser.email,
+      role: currentUser.role,
+      companyId: currentUser.companyId,
+      companySlug: currentUser.company?.slug || decoded.companySlug || null,
+    };
     req.access = await computeEffectiveAccess(decoded.id);
     if (!req.user.companyId && req.access.companyId) req.user.companyId = req.access.companyId;
     runWithTenant(req.user.companyId, () => next());

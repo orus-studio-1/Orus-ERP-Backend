@@ -30,23 +30,46 @@ import { runDueSubscriptionsJob } from './controllers/invoicingExtras.controller
 const app = express();
 
 app.use(helmet());
-const allowedOrigins = [
+const rootDomain = process.env.ROOT_DOMAIN || 'erp.com';
+const allowedExplicitOrigins = [
   'http://localhost:3000',
+  'http://localhost:3001',
   'http://localhost:8081',
   'http://127.0.0.1:3000',
+  'http://127.0.0.1:3001',
   'http://127.0.0.1:8081',
   process.env.FRONTEND_URL,
+  process.env.MARKETING_URL,
 ].filter(Boolean) as string[];
 
-app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin) || origin.includes('localhost') || origin.includes('127.0.0.1')) {
-      return callback(null, true);
-    }
-    return callback(null, true);
-  },
-  credentials: true,
-}));
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (allowedExplicitOrigins.includes(origin)) return callback(null, true);
+
+      try {
+        const parsed = new URL(origin);
+        const host = parsed.hostname;
+
+        // Allow localhost and any *.localhost subdomain on any port (for dev)
+        if (host === 'localhost' || host.endsWith('.localhost') || host === '127.0.0.1') {
+          return callback(null, true);
+        }
+
+        // Allow rootDomain and all *.rootDomain subdomains (for production)
+        if (host === rootDomain || host.endsWith(`.${rootDomain}`)) {
+          return callback(null, true);
+        }
+      } catch {
+        // Fall through
+      }
+
+      return callback(new Error('Not allowed by CORS policy'), false);
+    },
+    credentials: true,
+  })
+);
 app.use(morgan('dev'));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));

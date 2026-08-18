@@ -59,6 +59,7 @@ enum UserRole {
 model Company {
   id        String   @id @default(cuid())
   name      String
+  slug      String   @unique
   email     String?
   phone     String?
   address   String?
