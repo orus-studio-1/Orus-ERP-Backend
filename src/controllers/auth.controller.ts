@@ -98,7 +98,8 @@ export const login = async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
     const normalizedEmail = String(email || '').trim().toLowerCase();
-    const user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+    // Older accounts may have been stored before email normalization was added.
+    const user = await prisma.user.findFirst({ where: { email: { equals: normalizedEmail, mode: 'insensitive' } } });
     if (!user || !user.isActive) return error(res, 'Invalid credentials', 401);
 
     const valid = await bcrypt.compare(password, user.password);

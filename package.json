@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "dev": "nodemon --exec ts-node src/index.ts",
+    "dev": "npm run build && nodemon --watch src --ext ts,json --exec \"npm run build && node dist/index.js\"",
     "build": "tsc",
     "postinstall": "prisma generate",
     "start": "node dist/index.js",
