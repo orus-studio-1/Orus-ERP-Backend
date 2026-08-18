@@ -60,8 +60,10 @@ export const getTask = async (req: Request, res: Response) => {
 
 export const createTask = async (req: AuthRequest, res: Response) => {
   try {
+    const { title, description, projectId, assigneeId, status, priority, dueDate, parentId, tags } = req.body;
+    if (!title) return error(res, 'Task title is required', 400);
     const task = await prisma.task.create({
-      data: { ...req.body, creatorId: req.body.creatorId || req.user!.id },
+      data: { title, description, projectId, assigneeId, status, priority, dueDate: dueDate ? new Date(dueDate) : undefined, parentId, tags: Array.isArray(tags) ? tags : [], creatorId: req.user!.id },
       include: {
         assignee: { select: { firstName: true, lastName: true } },
         creator: { select: { firstName: true, lastName: true } },
@@ -75,7 +77,8 @@ export const createTask = async (req: AuthRequest, res: Response) => {
 
 export const updateTask = async (req: Request, res: Response) => {
   try {
-    const data: any = { ...req.body };
+    const { title, description, projectId, assigneeId, status, priority, dueDate, parentId, tags } = req.body;
+    const data: any = { title, description, projectId, assigneeId, status, priority, dueDate: dueDate ? new Date(dueDate) : dueDate === null ? null : undefined, parentId, tags: Array.isArray(tags) ? tags : undefined };
     if (req.body.status === 'DONE' && !req.body.completedAt) data.completedAt = new Date();
     const task = await prisma.task.update({ where: { id: req.params.id }, data });
     return success(res, task, 'Task updated');

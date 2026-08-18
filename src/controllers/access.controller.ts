@@ -5,6 +5,7 @@ import { AuthRequest } from '../middleware/auth';
 import { error, success } from '../utils/response';
 import { handlePrismaError } from '../utils/prismaError';
 import { ensureCompanyDefaultRoles, ensureSystemPermissions, permissionCatalog } from '../utils/accessControl';
+import { passwordValidationMessage } from '../utils/password';
 
 function companyId(req: Request) {
   return (req as AuthRequest).user?.companyId || null;
@@ -71,6 +72,10 @@ export const createAccessRole = async (req: Request, res: Response) => {
     const id = companyId(req);
     if (!id) return error(res, 'Company is required before creating roles', 400);
     const { name, title, description, permissionIds = [], deniedPermissionIds = [] } = req.body;
+    if (!String(name || '').trim() || !String(title || '').trim()) return error(res, 'Role name and title are required', 400);
+    const requestedPermissionIds = Array.from(new Set<string>([...permissionIds, ...deniedPermissionIds].filter(Boolean)));
+    const validPermissionCount = requestedPermissionIds.length ? await prisma.permission.count({ where: { id: { in: requestedPermissionIds } } }) : 0;
+    if (validPermissionCount !== requestedPermissionIds.length) return error(res, 'One or more permissions are invalid', 400);
     const role = await prisma.$transaction(async (tx) => {
       const created = await tx.accessRole.create({
         data: { companyId: id, name: String(name).trim().toUpperCase().replace(/\s+/g, '_'), title, description },
@@ -100,6 +105,9 @@ export const updateAccessRole = async (req: Request, res: Response) => {
     const role = await prisma.accessRole.findFirst({ where: { id: req.params.id, ...(id ? { companyId: id } : {}) } });
     if (!role) return error(res, 'Role not found', 404);
     if (role.isSuperAdmin && deniedPermissionIds.length) return error(res, 'Super Admin role cannot receive deny permissions', 400);
+    const requestedPermissionIds = Array.from(new Set<string>([...permissionIds, ...deniedPermissionIds].filter(Boolean)));
+    const validPermissionCount = requestedPermissionIds.length ? await prisma.permission.count({ where: { id: { in: requestedPermissionIds } } }) : 0;
+    if (validPermissionCount !== requestedPermissionIds.length) return error(res, 'One or more permissions are invalid', 400);
     const updated = await prisma.$transaction(async (tx) => {
       await tx.accessRole.update({ where: { id: role.id }, data: { title, description, isActive } });
       await tx.rolePermission.deleteMany({ where: { roleId: role.id } });
@@ -146,11 +154,22 @@ export const updateUserAccess = async (req: Request, res: Response) => {
     const user = await prisma.user.findFirst({ where: { id: req.params.id, ...(id ? { companyId: id } : {}) } });
     if (!user) return error(res, 'User not found', 404);
     if (user.id === (req as AuthRequest).user?.id && isActive === false) return error(res, 'You cannot disable your own account', 400);
+    if (!id) return error(res, 'Company context is required', 403);
+    if (user.id === (req as AuthRequest).user?.id && (roleIds.length || permissionOverrides.length)) return error(res, 'You cannot change your own roles or permission overrides', 403);
+
+    const uniqueRoleIds = Array.from(new Set<string>(roleIds.filter(Boolean)));
+    const selectedRoles = await prisma.accessRole.findMany({ where: { id: { in: uniqueRoleIds }, companyId: id, isActive: true } });
+    if (selectedRoles.length !== uniqueRoleIds.length) return error(res, 'One or more roles are invalid for this company', 400);
+    if (selectedRoles.some((role) => role.isSuperAdmin) && !(req as AuthRequest).access?.isSuperAdmin) return error(res, 'Only a Super Admin can assign the Super Admin role', 403);
+    const overrideIds = Array.from(new Set<string>(permissionOverrides.map((item: any) => item?.permissionId).filter(Boolean)));
+    const validPermissionCount = overrideIds.length ? await prisma.permission.count({ where: { id: { in: overrideIds } } }) : 0;
+    if (validPermissionCount !== overrideIds.length) return error(res, 'One or more permission overrides are invalid', 400);
+    if (permissionOverrides.some((item: any) => !['ALLOW', 'DENY'].includes(item?.effect))) return error(res, 'Permission override effect must be ALLOW or DENY', 400);
 
     const updated = await prisma.$transaction(async (tx) => {
-      await tx.user.update({ where: { id: user.id }, data: { isActive } });
+      await tx.user.update({ where: { id: user.id }, data: { isActive, tokenVersion: { increment: 1 } } });
       await tx.userAccessRole.deleteMany({ where: { userId: user.id } });
-      for (const roleId of Array.from(new Set<string>(roleIds.filter(Boolean)))) {
+      for (const roleId of uniqueRoleIds) {
         await tx.userAccessRole.create({ data: { userId: user.id, roleId, assignedById: (req as AuthRequest).user?.id } });
       }
       await tx.userPermissionOverride.deleteMany({ where: { userId: user.id } });
@@ -186,7 +205,8 @@ export const issueUserPassword = async (req: Request, res: Response) => {
   try {
     const id = companyId(req);
     const { password, confirmPassword, activate = true } = req.body;
-    if (!password || String(password).length < 8) return error(res, 'Password must be at least 8 characters', 400);
+    const passwordError = passwordValidationMessage(password);
+    if (passwordError) return error(res, passwordError, 400);
     if (confirmPassword !== undefined && password !== confirmPassword) return error(res, 'Password confirmation does not match', 400);
 
     const user = await prisma.user.findFirst({
@@ -198,7 +218,7 @@ export const issueUserPassword = async (req: Request, res: Response) => {
 
     const hashed = await bcrypt.hash(password, 10);
     const updated = await prisma.$transaction(async (tx) => {
-      await tx.user.update({ where: { id: user.id }, data: { password: hashed, isActive: activate ? true : user.isActive } });
+      await tx.user.update({ where: { id: user.id }, data: { password: hashed, isActive: activate ? true : user.isActive, tokenVersion: { increment: 1 } } });
       await tx.accessAuditLog.create({
         data: {
           companyId: id || undefined,

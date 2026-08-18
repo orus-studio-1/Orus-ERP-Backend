@@ -18,10 +18,11 @@ export const updateInvoiceStatus = async (req: Request, res: Response) => {
       if (!existing) throw new Error('Invoice not found');
       if (status === 'SUBMITTED' || status === 'SENT') {
         if (existing.status !== 'DRAFT') throw new Error('Only draft invoices can be submitted');
-        await tx.salesInvoice.update({
-          where: { id: existing.id },
+        const claimed = await tx.salesInvoice.updateMany({
+          where: { id: existing.id, status: 'DRAFT' },
           data: { status: 'SUBMITTED', submittedAt: new Date(), outstandingAmount: existing.grandTotal.minus(existing.amountPaid), paymentStatus: 'UNPAID' },
         });
+        if (claimed.count !== 1) throw new Error('Invoice is already being submitted or is no longer a draft');
         await resolveAndSnapshotInvoiceTaxes(tx, existing.id, existing);
         if (!existing.deliveryNoteId) await postStockOut(tx, existing.items, existing.invoiceNo, 'Stock issued from submitted sales invoice');
         if (existing.salesOrderId) await markSalesOrderBilled(tx, existing.salesOrderId, existing.items);
@@ -32,6 +33,13 @@ export const updateInvoiceStatus = async (req: Request, res: Response) => {
       if (status === 'CANCELLED') {
         if (existing.status === 'DRAFT') throw new Error('Delete draft invoices instead of cancelling');
         if (existing.status === 'CANCELLED') throw new Error('Invoice is already cancelled');
+        const [legacyPayments, submittedAllocations] = await Promise.all([
+          tx.payment.count({ where: { invoiceId: existing.id } }),
+          tx.paymentEntryAllocation.count({ where: { invoiceId: existing.id, paymentEntry: { status: 'SUBMITTED' } } }),
+        ]);
+        if (legacyPayments || submittedAllocations || existing.amountPaid.gt(0)) throw new Error('Reverse or cancel all payments allocated to this invoice before cancelling it');
+        const claimed = await tx.salesInvoice.updateMany({ where: { id: existing.id, status: 'SUBMITTED' }, data: { status: 'CANCELLED', cancelledAt: new Date(), paymentStatus: 'UNPAID' } });
+        if (claimed.count !== 1) throw new Error('Invoice is already being cancelled or its status changed');
         await postInvoiceLedger(tx, existing, true);
         if (!existing.deliveryNoteId) await postStockOut(tx, existing.items, existing.invoiceNo, 'Stock returned from cancelled sales invoice', undefined, true);
         if (existing.salesOrderId) {
@@ -40,10 +48,6 @@ export const updateInvoiceStatus = async (req: Request, res: Response) => {
           }
           await refreshSalesOrderProgress(tx, existing.salesOrderId);
         }
-        await tx.salesInvoice.update({
-          where: { id: existing.id },
-          data: { status: 'CANCELLED', cancelledAt: new Date(), paymentStatus: 'UNPAID' },
-        });
         await audit(tx, req, { entityType: 'SALES_INVOICE', entityId: existing.id, invoiceId: existing.id, action: 'CANCEL', statusBefore: existing.status, statusAfter: 'CANCELLED', message: `Cancelled ${existing.invoiceNo}` });
         return existing.id;
       }
@@ -79,7 +83,14 @@ export const amendInvoice = async (req: Request, res: Response) => {
       const existing = await tx.salesInvoice.findUnique({ where: { id: req.params.id }, include: { items: true } });
       if (!existing) throw new Error('Invoice not found');
       if (existing.status !== 'CANCELLED') throw new Error('Only cancelled invoices can be amended');
-      const invoiceNo = `${existing.invoiceNo}-1`;
+      await tx.$executeRawUnsafe('SELECT pg_advisory_xact_lock(hashtext($1))', `invoice-amend:${existing.id}`);
+      const amendmentCount = await tx.salesInvoice.count({ where: { amendedFromId: existing.id } });
+      let suffix = amendmentCount + 1;
+      let invoiceNo = `${existing.invoiceNo}-${suffix}`;
+      while (await tx.salesInvoice.findFirst({ where: { invoiceNo } })) {
+        suffix += 1;
+        invoiceNo = `${existing.invoiceNo}-${suffix}`;
+      }
       const amended = await tx.salesInvoice.create({
         data: {
           invoiceNo,

@@ -7,13 +7,14 @@ import { handlePrismaError } from '../utils/prismaError';
 import { AuthRequest } from '../middleware/auth';
 import { computeEffectiveAccess, ensureCompanyDefaultRoles } from '../utils/accessControl';
 import { generateEmployeeId } from '../utils/generate';
+import { passwordValidationMessage } from '../utils/password';
 
 async function buildAuthPayload(user: any) {
   const access = await computeEffectiveAccess(user.id);
   const token = jwt.sign(
-    { id: user.id, email: user.email, role: user.role, companyId: user.companyId },
+    { id: user.id, email: user.email, companyId: user.companyId, tokenVersion: user.tokenVersion },
     process.env.JWT_SECRET!,
-    { expiresIn: (process.env.JWT_EXPIRES_IN || '7d') as any }
+    { expiresIn: (process.env.JWT_EXPIRES_IN || '1h') as any }
   );
   const { password: _, ...userData } = user;
   return {
@@ -27,6 +28,9 @@ export const register = async (req: Request, res: Response) => {
     const { password, firstName, lastName, phone, companyName, companyPhone, country, currency } = req.body;
     const email = String(req.body.email || '').trim().toLowerCase();
     if (!email) return error(res, 'Email is required', 400);
+    const passwordError = passwordValidationMessage(password);
+    if (passwordError) return error(res, passwordError, 400);
+    if (!firstName || !lastName) return error(res, 'First name and last name are required', 400);
     const exists = await prisma.user.findUnique({ where: { email } });
     if (exists) return error(res, 'Email already registered', 400);
     if (!companyName) return error(res, 'Company name is required', 400);
@@ -93,13 +97,20 @@ export const register = async (req: Request, res: Response) => {
 export const login = async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
-    const user = await prisma.user.findUnique({ where: { email } });
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    const user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
     if (!user || !user.isActive) return error(res, 'Invalid credentials', 401);
 
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) return error(res, 'Invalid credentials', 401);
     if (user.companyId && ['SUPER_ADMIN', 'ADMIN'].includes(user.role)) {
-      await ensureCompanyDefaultRoles(user.companyId);
+      const roles = await ensureCompanyDefaultRoles(user.companyId);
+      const accessRole = roles[user.role];
+      if (accessRole) await prisma.userAccessRole.upsert({
+        where: { userId_roleId: { userId: user.id, roleId: accessRole.id } },
+        update: {},
+        create: { userId: user.id, roleId: accessRole.id, assignedById: user.id },
+      });
     }
 
     return success(res, await buildAuthPayload(user), 'Login successful');
@@ -138,6 +149,8 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
 export const changePassword = async (req: AuthRequest, res: Response) => {
   try {
     const { currentPassword, newPassword } = req.body;
+    const passwordError = passwordValidationMessage(newPassword);
+    if (passwordError) return error(res, passwordError, 400);
     const user = await prisma.user.findUnique({ where: { id: req.user!.id } });
     if (!user) return error(res, 'User not found', 404);
 
@@ -145,8 +158,17 @@ export const changePassword = async (req: AuthRequest, res: Response) => {
     if (!valid) return error(res, 'Current password is incorrect', 400);
 
     const hashed = await bcrypt.hash(newPassword, 10);
-    await prisma.user.update({ where: { id: user.id }, data: { password: hashed } });
+    await prisma.user.update({ where: { id: user.id }, data: { password: hashed, tokenVersion: { increment: 1 } } });
     return success(res, null, 'Password changed successfully');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
+export const logout = async (req: AuthRequest, res: Response) => {
+  try {
+    await prisma.user.update({ where: { id: req.user!.id }, data: { tokenVersion: { increment: 1 } } });
+    return success(res, null, 'Logged out successfully');
   } catch (err: any) {
     return handlePrismaError(res, err);
   }

@@ -7,6 +7,7 @@ import { calculateInvoiceTotals, serializeInvoice } from '../../utils/invoice';
 import { addMonths, resolveAndSnapshotInvoiceTaxes } from '../../utils/erp';
 import { nextNo } from './shared';
 import { normalizeInvoiceItems, postInvoiceLedger } from '../invoices/shared';
+import { runWithTenant } from '../../utils/tenant';
 
 const D = Prisma.Decimal;
 
@@ -199,11 +200,17 @@ export const runDueSubscriptions = async (_req: Request, res: Response) => {
 };
 
 export async function runDueSubscriptionsJob() {
-  await prisma.$transaction(async (tx) => {
-    const due = await tx.subscriptionTemplate.findMany({
-      where: { isActive: true, nextRunDate: { lte: new Date() }, OR: [{ endDate: null }, { endDate: { gte: new Date() } }] },
-      include: { items: { include: { product: true } } },
-    });
-    for (const subscription of due) await generateInvoiceForSubscription(tx, subscription);
-  });
+  const tenants = await prisma.subscriptionTemplate.findMany({ where: { companyId: { not: null } }, distinct: ['companyId'], select: { companyId: true } });
+  for (const tenant of tenants) {
+    if (!tenant.companyId) continue;
+    await runWithTenant(tenant.companyId, () => prisma.$transaction(async (tx) => {
+      const lockRows = await tx.$queryRawUnsafe('SELECT pg_try_advisory_xact_lock(hashtext($1)) AS locked', `subscription-job:${tenant.companyId}`) as Array<{ locked: boolean }>;
+      if (!lockRows[0]?.locked) return;
+      const due = await tx.subscriptionTemplate.findMany({
+        where: { isActive: true, nextRunDate: { lte: new Date() }, OR: [{ endDate: null }, { endDate: { gte: new Date() } }] },
+        include: { items: { include: { product: true } } },
+      });
+      for (const subscription of due) await generateInvoiceForSubscription(tx, subscription);
+    }));
+  }
 }

@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import prisma from '../../lib/prisma';
 import { success, paginated, error } from '../../utils/response';
 import { handlePrismaError } from '../../utils/prismaError';
+import { pickDefined } from '../../utils/payload';
 import { AuthRequest } from '../../middleware/auth';
 
 export const getOrganizations = async (req: Request, res: Response) => {
@@ -62,7 +63,7 @@ export const createOrganization = async (req: AuthRequest, res: Response) => {
   try {
     if (!req.body.name) return error(res, 'Organization name is required', 400);
     const organization = await prisma.crmOrganization.create({
-      data: { ...req.body, companyId: req.user?.companyId, ownerId: req.body.ownerId || req.user?.id },
+      data: { ...pickDefined(req.body, ['name', 'website', 'phone', 'email', 'industry', 'employeeCount', 'annualRevenue', 'address', 'city', 'state', 'country', 'zip', 'notes', 'ownerId', 'isActive']), companyId: req.user?.companyId, ownerId: req.body.ownerId || req.user?.id } as any,
     });
     return success(res, organization, 'Organization created', 201);
   } catch (err: any) {
@@ -72,7 +73,7 @@ export const createOrganization = async (req: AuthRequest, res: Response) => {
 
 export const updateOrganization = async (req: Request, res: Response) => {
   try {
-    const organization = await prisma.crmOrganization.update({ where: { id: req.params.id }, data: req.body });
+    const organization = await prisma.crmOrganization.update({ where: { id: req.params.id }, data: pickDefined(req.body, ['name', 'website', 'phone', 'email', 'industry', 'employeeCount', 'annualRevenue', 'address', 'city', 'state', 'country', 'zip', 'notes', 'ownerId', 'isActive']) as any });
     return success(res, organization, 'Organization updated');
   } catch (err: any) {
     return handlePrismaError(res, err);

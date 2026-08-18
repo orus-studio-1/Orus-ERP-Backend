@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import prisma from '../../lib/prisma';
 import { success, paginated, error } from '../../utils/response';
 import { handlePrismaError } from '../../utils/prismaError';
+import { pickDefined } from '../../utils/payload';
 import { AuthRequest } from '../../middleware/auth';
 import { ensureOrganization, logCrmActivity } from './shared';
 
@@ -142,7 +143,7 @@ export const openLeadContact = async (req: AuthRequest, res: Response) => {
 
 export const updateContact = async (req: Request, res: Response) => {
   try {
-    const contact = await prisma.contact.update({ where: { id: req.params.id }, data: req.body });
+    const contact = await prisma.contact.update({ where: { id: req.params.id }, data: pickDefined(req.body, ['firstName', 'lastName', 'email', 'phone', 'mobile', 'jobTitle', 'department', 'address', 'city', 'state', 'country', 'zip', 'notes', 'organizationId', 'ownerId', 'isPrimary', 'isActive']) as any });
     return success(res, contact, 'Contact updated');
   } catch (err: any) {
     return handlePrismaError(res, err);

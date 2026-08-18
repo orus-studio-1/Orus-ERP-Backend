@@ -3,6 +3,7 @@ import prisma from '../../lib/prisma';
 import { postStockLedger } from '../inventory/stockLedger.service';
 import { ensureLedgerAccount, postToLedger, reverseLedgerForVoucher } from '../accounting/ledger.service';
 import { currentCompanyId } from '../../utils/tenant';
+import { allocateDocumentNo } from '../../utils/generate';
 
 const D = Prisma.Decimal;
 
@@ -24,9 +25,14 @@ export function documentTotals(items: any[] = [], discount: any = 0, shippingAmo
 }
 
 export async function nextNo(model: string, field: string, prefix: string, tx: any = prisma) {
-  const count = await tx[model].count();
-  const companyPrefix = (currentCompanyId() || 'GLOBAL').replace(/[^a-zA-Z0-9]/g, '').slice(-6).toUpperCase();
-  return `${companyPrefix}-${prefix}-${String(count + 1).padStart(6, '0')}`;
+  const documentTypes: Record<string, string> = {
+    materialRequest: 'MATERIAL_REQUEST', requestForQuotation: 'REQUEST_FOR_QUOTATION', supplierQuotation: 'SUPPLIER_QUOTATION',
+    blanketPurchaseOrder: 'BLANKET_PURCHASE_ORDER', purchaseReceipt: 'PURCHASE_RECEIPT', qualityInspection: 'QUALITY_INSPECTION',
+    landedCostVoucher: 'LANDED_COST_VOUCHER', supplierPayment: 'SUPPLIER_PAYMENT',
+  };
+  const documentType = documentTypes[model];
+  if (!documentType) throw new Error(`No numbering series is configured for ${model}.${field}`);
+  return allocateDocumentNo(documentType, prefix, 6, tx);
 }
 
 export function normalizeItems(items: any[] = []) {

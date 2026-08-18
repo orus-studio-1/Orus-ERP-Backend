@@ -69,7 +69,14 @@ export const createProject = async (req: Request, res: Response) => {
 
 export const updateProject = async (req: Request, res: Response) => {
   try {
-    const project = await prisma.project.update({ where: { id: req.params.id }, data: req.body });
+    const { name, description, status, priority, startDate, endDate, budget, progress } = req.body;
+    const project = await prisma.project.update({ where: { id: req.params.id }, data: {
+      name, description, status, priority,
+      startDate: startDate ? new Date(startDate) : startDate === null ? null : undefined,
+      endDate: endDate ? new Date(endDate) : endDate === null ? null : undefined,
+      budget: budget === null ? null : budget !== undefined ? Number(budget) : undefined,
+      progress: progress !== undefined ? Math.max(0, Math.min(100, Number(progress))) : undefined,
+    } });
     return success(res, project, 'Project updated');
   } catch (err: any) {
     return handlePrismaError(res, err);
@@ -88,6 +95,10 @@ export const deleteProject = async (req: Request, res: Response) => {
 export const addProjectMember = async (req: Request, res: Response) => {
   try {
     const { userId, role } = req.body;
+    const targetUser = await prisma.user.findFirst({ where: { id: userId, companyId: (req as AuthRequest).user?.companyId || '__missing_company__' } });
+    if (!targetUser) return error(res, 'User not found in this company', 404);
+    const project = await prisma.project.findFirst({ where: { id: req.params.id } });
+    if (!project) return error(res, 'Project not found', 404);
     const member = await prisma.projectMember.upsert({
       where: { projectId_userId: { projectId: req.params.id, userId } },
       update: { role },

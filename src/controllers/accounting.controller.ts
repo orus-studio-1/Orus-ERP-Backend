@@ -5,6 +5,7 @@ import { success, paginated, error } from '../utils/response';
 import { handlePrismaError } from '../utils/prismaError';
 import { generateJournalNo } from '../utils/generate';
 import { postToLedger, reverseLedgerForVoucher } from '../services/accounting/ledger.service';
+import { pickDefined } from '../utils/payload';
 
 function lineTotals(lines: any[] = []) {
   return lines.reduce((acc, line) => ({ debit: acc.debit + Number(line.debit || 0), credit: acc.credit + Number(line.credit || 0) }), { debit: 0, credit: 0 });
@@ -107,7 +108,8 @@ export const createAccount = async (req: Request, res: Response) => {
 
 export const updateAccount = async (req: Request, res: Response) => {
   try {
-    const account = await prisma.account.update({ where: { id: req.params.id }, data: req.body });
+    const data = pickDefined(req.body, ['code', 'name', 'type', 'subType', 'parentId', 'description', 'rootType', 'isGroup', 'freezeAccount', 'frozenTillDate', 'isDefaultCash', 'isDefaultBank', 'isDefaultReceivable', 'isDefaultPayable', 'isDefaultTax', 'isDefaultRoundOff', 'isDefaultRetainedEarnings', 'isActive', 'currency']);
+    const account = await prisma.account.update({ where: { id: req.params.id }, data: data as any });
     return success(res, account, 'Account updated');
   } catch (err: any) {
     return handlePrismaError(res, err);
@@ -291,7 +293,7 @@ export const createFiscalYear = async (req: Request, res: Response) => {
 
 export const updatePeriod = async (req: Request, res: Response) => {
   try {
-    const period = await prisma.period.update({ where: { id: req.params.id }, data: req.body });
+    const period = await prisma.period.update({ where: { id: req.params.id }, data: pickDefined(req.body, ['name', 'startDate', 'endDate', 'fiscalYearId', 'isClosed']) as any });
     return success(res, period, 'Period updated');
   } catch (err: any) {
     return handlePrismaError(res, err);
@@ -310,7 +312,7 @@ export const getCostCenters = async (_req: Request, res: Response) => {
 export const createCostCenter = async (req: Request, res: Response) => {
   try {
     if (!req.body.code || !req.body.name) return error(res, 'code and name are required', 400);
-    const item = await prisma.costCenter.create({ data: req.body });
+    const item = await prisma.costCenter.create({ data: pickDefined(req.body, ['code', 'name', 'parentId', 'isGroup', 'isActive']) as any });
     return success(res, item, 'Cost center created', 201);
   } catch (err: any) {
     return handlePrismaError(res, err);

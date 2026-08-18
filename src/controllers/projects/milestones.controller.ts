@@ -22,7 +22,9 @@ export const getMilestones = async (req: Request, res: Response) => {
 
 export const createMilestone = async (req: Request, res: Response) => {
   try {
-    const m = await prisma.milestone.create({ data: req.body });
+    const { name, description, projectId, dueDate, status } = req.body;
+    if (!name || !projectId) return error(res, 'Milestone name and project are required', 400);
+    const m = await prisma.milestone.create({ data: { name, description, projectId, dueDate: dueDate ? new Date(dueDate) : undefined, status } });
     return success(res, m, 'Milestone created', 201);
   } catch (err: any) {
     return handlePrismaError(res, err);
@@ -31,7 +33,8 @@ export const createMilestone = async (req: Request, res: Response) => {
 
 export const updateMilestone = async (req: Request, res: Response) => {
   try {
-    const m = await prisma.milestone.update({ where: { id: req.params.id }, data: req.body });
+    const { name, description, dueDate, status } = req.body;
+    const m = await prisma.milestone.update({ where: { id: req.params.id }, data: { name, description, dueDate: dueDate ? new Date(dueDate) : dueDate === null ? null : undefined, status } });
     return success(res, m, 'Milestone updated');
   } catch (err: any) {
     return handlePrismaError(res, err);

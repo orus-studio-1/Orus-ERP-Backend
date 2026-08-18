@@ -3,6 +3,9 @@ import prisma from '../lib/prisma';
 import { success, paginated, error } from '../utils/response';
 import { handlePrismaError } from '../utils/prismaError';
 import { generateSupplierNo } from '../utils/generate';
+import { pickDefined } from '../utils/payload';
+
+const supplierFields = ['name', 'email', 'phone', 'address', 'city', 'state', 'country', 'zip', 'taxId', 'currency', 'paymentTerms', 'bankAccount', 'bankName', 'notes', 'isActive'] as const;
 
 export const getSuppliers = async (req: Request, res: Response) => {
   try {
@@ -52,7 +55,7 @@ export const getSupplier = async (req: Request, res: Response) => {
 export const createSupplier = async (req: Request, res: Response) => {
   try {
     const supplierNo = await generateSupplierNo();
-    const supplier = await prisma.supplier.create({ data: { ...req.body, supplierNo } });
+    const supplier = await prisma.supplier.create({ data: { ...pickDefined(req.body, supplierFields), supplierNo } as any });
     return success(res, supplier, 'Supplier created', 201);
   } catch (err: any) {
     return handlePrismaError(res, err);
@@ -61,7 +64,7 @@ export const createSupplier = async (req: Request, res: Response) => {
 
 export const updateSupplier = async (req: Request, res: Response) => {
   try {
-    const supplier = await prisma.supplier.update({ where: { id: req.params.id }, data: req.body });
+    const supplier = await prisma.supplier.update({ where: { id: req.params.id }, data: pickDefined(req.body, supplierFields) as any });
     return success(res, supplier, 'Supplier updated');
   } catch (err: any) {
     return handlePrismaError(res, err);
@@ -76,4 +79,3 @@ export const deleteSupplier = async (req: Request, res: Response) => {
     return handlePrismaError(res, err);
   }
 };
-

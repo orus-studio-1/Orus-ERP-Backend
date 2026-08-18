@@ -20,8 +20,9 @@ export const getComments = async (req: Request, res: Response) => {
 
 export const createComment = async (req: AuthRequest, res: Response) => {
   try {
+    if (!req.body.content || !req.body.taskId) return error(res, 'Comment content and task are required', 400);
     const comment = await prisma.comment.create({
-      data: { ...req.body, userId: req.body.userId || req.user!.id },
+      data: { content: String(req.body.content).trim(), taskId: req.body.taskId, userId: req.user!.id },
       include: { user: { select: { firstName: true, lastName: true, avatar: true } } },
     });
     return success(res, comment, 'Comment added', 201);

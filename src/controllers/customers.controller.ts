@@ -4,6 +4,9 @@ import { success, paginated, error } from '../utils/response';
 import { handlePrismaError } from '../utils/prismaError';
 import { generateCustomerNo } from '../utils/generate';
 import { serializeInvoice, serializeMoney } from '../utils/invoice';
+import { pickDefined } from '../utils/payload';
+
+const customerFields = ['name', 'email', 'phone', 'contactId', 'address', 'city', 'state', 'country', 'zip', 'taxId', 'currency', 'creditLimit', 'paymentTerms', 'notes', 'isActive'] as const;
 
 export const getCustomers = async (req: Request, res: Response) => {
   try {
@@ -54,7 +57,7 @@ export const getCustomer = async (req: Request, res: Response) => {
 export const createCustomer = async (req: Request, res: Response) => {
   try {
     const customerNo = await generateCustomerNo();
-    const customer = await prisma.customer.create({ data: { ...req.body, customerNo } });
+    const customer = await prisma.customer.create({ data: { ...pickDefined(req.body, customerFields), customerNo } as any });
     return success(res, customer, 'Customer created', 201);
   } catch (err: any) {
     return handlePrismaError(res, err);
@@ -63,7 +66,7 @@ export const createCustomer = async (req: Request, res: Response) => {
 
 export const updateCustomer = async (req: Request, res: Response) => {
   try {
-    const customer = await prisma.customer.update({ where: { id: req.params.id }, data: req.body });
+    const customer = await prisma.customer.update({ where: { id: req.params.id }, data: pickDefined(req.body, customerFields) as any });
     return success(res, customer, 'Customer updated');
   } catch (err: any) {
     return handlePrismaError(res, err);

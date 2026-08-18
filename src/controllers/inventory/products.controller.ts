@@ -2,6 +2,9 @@ import { Request, Response } from 'express';
 import prisma from '../../lib/prisma';
 import { success, paginated, error } from '../../utils/response';
 import { handlePrismaError } from '../../utils/prismaError';
+import { pickDefined } from '../../utils/payload';
+
+const productFields = ['sku', 'name', 'description', 'categoryId', 'unitId', 'type', 'costPrice', 'salePrice', 'taxRate', 'minStockLevel', 'maxStockLevel', 'valuationMethod', 'maintainStock', 'allowNegativeStock', 'hasBatchNo', 'hasSerialNo', 'reorderLevel', 'reorderQty', 'brand', 'manufacturer', 'isActive', 'image', 'barcode', 'weight', 'hsnCode', 'taxCode', 'defaultTaxTemplateId', 'defaultWarehouseId', 'isVariant', 'variantOfId'] as const;
 
 export const getProducts = async (req: Request, res: Response) => {
   try {
@@ -87,7 +90,7 @@ export const searchProducts = async (req: Request, res: Response) => {
 export const createProduct = async (req: Request, res: Response) => {
   try {
     const product = await prisma.product.create({
-      data: req.body,
+      data: pickDefined(req.body, productFields) as any,
       include: { category: true, unit: true },
     });
     return success(res, product, 'Product created', 201);
@@ -100,7 +103,7 @@ export const updateProduct = async (req: Request, res: Response) => {
   try {
     const product = await prisma.product.update({
       where: { id: req.params.id },
-      data: req.body,
+      data: pickDefined(req.body, productFields) as any,
       include: { category: true, unit: true },
     });
     return success(res, product, 'Product updated');
