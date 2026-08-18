@@ -34,11 +34,20 @@ export const authenticate = async (req: AuthRequest, res: Response, next: NextFu
         role: true,
         companyId: true,
         isActive: true,
+        tokenVersion: true,
         company: { select: { slug: true } },
       },
     });
     if (!currentUser || !currentUser.isActive) {
       error(res, 'Account is inactive or no longer exists', 401);
+      return;
+    }
+    if (decoded.tokenVersion !== undefined && currentUser.tokenVersion !== undefined && decoded.tokenVersion !== currentUser.tokenVersion) {
+      error(res, 'Session has been revoked. Please sign in again.', 401);
+      return;
+    }
+    if (!currentUser.companyId) {
+      error(res, 'Your account is not assigned to a company. Contact an administrator.', 403);
       return;
     }
     req.user = {
@@ -59,7 +68,7 @@ export const authenticate = async (req: AuthRequest, res: Response, next: NextFu
 
 export const authorize = (...roles: string[]) =>
   (req: AuthRequest, res: Response, next: NextFunction): void => {
-    if (req.access?.isSuperAdmin || req.permissionGatePassed) {
+    if (req.access?.isSuperAdmin) {
       next();
       return;
     }
@@ -83,7 +92,15 @@ export const requirePermission = (module: string, resource: string, action: any)
 export const requireModuleAccess = (module: string, resourceResolver?: (req: Request) => string) =>
   (req: AuthRequest, res: Response, next: NextFunction): void => {
     const action = getActionForRequest(req.method, req.path);
-    const resource = resourceResolver ? resourceResolver(req) : firstPathSegment(req.path);
+    const segment = resourceResolver ? resourceResolver(req) : firstPathSegment(req.path);
+    const aliases: Record<string, Record<string, string>> = {
+      hr: { 'leave-types': 'leave', 'leave-requests': 'leave', 'leave-balances': 'leave', 'leave-allocations': 'leave', 'leave-policies': 'leave', 'leave-ledger': 'leave', 'salary-components': 'salary', 'salary-structures': 'salary', 'salary-slips': 'salary', 'salary-structure-assignments': 'salary', 'payroll-entries': 'payroll', 'shift-types': 'shifts', 'shift-assignments': 'shifts', 'shift-roster': 'shifts', 'shift-auto-attendance': 'shifts', 'lifecycle-events': 'lifecycle' },
+      inventory: { reports: 'reports', 'uom-conversions': 'units' },
+      accounting: { 'trial-balance': 'reports', 'fixed-assets': 'accounts', 'journal-templates': 'journal-entries', 'recurring-journals': 'journal-entries', 'period-closing-vouchers': 'period-closing' },
+      invoicing: { customers: 'sales-invoices', products: 'sales-invoices', invoices: 'sales-invoices', 'audit-logs': 'audit-log' },
+      sales: { orders: 'sales-orders' },
+    };
+    const resource = aliases[module]?.[segment] || segment;
     if (hasPermission(req.access, module, resource, action)) {
       req.permissionGatePassed = true;
       next();

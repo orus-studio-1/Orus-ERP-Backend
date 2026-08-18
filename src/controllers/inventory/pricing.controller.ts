@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { success, paginated, error } from '../../utils/response';
 import { handlePrismaError } from '../../utils/prismaError';
+import { pickDefined } from '../../utils/payload';
 
 export const getPriceLists = async (_req: Request, res: Response) => {
   try {
@@ -15,7 +16,7 @@ export const getPriceLists = async (_req: Request, res: Response) => {
 export const createPriceList = async (req: Request, res: Response) => {
   try {
     if (!req.body.name) return error(res, 'name is required', 400);
-    const item = await prisma.priceList.create({ data: req.body });
+    const item = await prisma.priceList.create({ data: pickDefined(req.body, ['name', 'currency', 'isBuying', 'isSelling', 'isActive']) as any });
     return success(res, item, 'Price list created', 201);
   } catch (err: any) {
     return handlePrismaError(res, err);

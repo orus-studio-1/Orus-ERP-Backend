@@ -14,6 +14,33 @@ import {
   titleFromLead,
   validateLead,
 } from './shared';
+import { generateCustomerNo } from '../../utils/generate';
+
+async function ensureCustomerForLead(tx: any, lead: any, contact: any) {
+  let customer = contact?.id ? await tx.customer.findFirst({ where: { contactId: contact.id } }) : null;
+  if (!customer && lead.email) customer = await tx.customer.findFirst({ where: { email: { equals: lead.email, mode: 'insensitive' } } });
+  if (customer) {
+    if (!customer.contactId && contact?.id) {
+      customer = await tx.customer.update({ where: { id: customer.id }, data: { contactId: contact.id } });
+    }
+    return customer;
+  }
+
+  const personName = [lead.firstName, lead.lastName].filter(Boolean).join(' ').trim();
+  return tx.customer.create({
+    data: {
+      customerNo: await generateCustomerNo(),
+      name: lead.company?.trim() || personName || lead.title,
+      email: lead.email || null,
+      phone: lead.phone || null,
+      contactId: contact?.id || null,
+      city: lead.city || null,
+      country: lead.country || null,
+      notes: lead.notes || null,
+      currency: 'USD',
+    },
+  });
+}
 
 export const getLeads = async (req: Request, res: Response) => {
   try {
@@ -106,6 +133,7 @@ export const createLead = async (req: AuthRequest, res: Response) => {
 };
 
 export const updateLead = async (req: AuthRequest, res: Response) => {
+  if (req.body.status === 'CONVERTED') return convertLead(req, res);
   try {
     const lead = await prisma.$transaction(async (tx) => {
       const existing = await tx.lead.findUnique({ where: { id: req.params.id } });
@@ -146,10 +174,11 @@ export const deleteLead = async (req: Request, res: Response) => {
 export const convertLead = async (req: AuthRequest, res: Response) => {
   try {
     const opportunity = await prisma.$transaction(async (tx) => {
-      const lead = await tx.lead.findUnique({ where: { id: req.params.id } });
+      const lead = await tx.lead.findUnique({ where: { id: req.params.id }, include: { contacts: true, opportunity: true } });
       if (!lead) throw new Error('Lead not found');
       if (lead.status === 'CONVERTED') throw new Error('Lead is already converted');
-      const contact = await tx.contact.create({
+      if (lead.opportunity) throw new Error('Lead already has an opportunity; use Qualify to complete its conversion');
+      const contact = lead.contacts[0] || await tx.contact.create({
         data: {
           leadId: lead.id,
           firstName: lead.firstName,
@@ -161,12 +190,14 @@ export const convertLead = async (req: AuthRequest, res: Response) => {
           notes: lead.notes,
         },
       });
+      const customer = await ensureCustomerForLead(tx, lead, contact);
       const created = await tx.opportunity.create({
         data: {
           title: req.body.title || `${lead.firstName} ${lead.lastName} - ${lead.company || 'Opportunity'}`,
           leadId: lead.id,
           contactId: contact.id,
           organizationId: lead.organizationId,
+          customerId: customer.id,
           value: Number(req.body.value ?? lead.value ?? 0),
           currency: req.body.currency || 'USD',
           stage: 'QUALIFICATION',
@@ -178,12 +209,12 @@ export const convertLead = async (req: AuthRequest, res: Response) => {
       await tx.lead.update({ where: { id: lead.id }, data: { status: 'CONVERTED' } });
       await logCrmActivity(tx, req.user!.id, {
         type: 'CONVERSION',
-        subject: 'Lead converted to opportunity',
-        description: `Converted into ${created.title}`,
+        subject: 'Lead converted to customer and opportunity',
+        description: `Created or linked customer ${customer.name} and opportunity ${created.title}`,
         leadId: lead.id,
         opportunityId: created.id,
       });
-      return tx.opportunity.findUnique({ where: { id: created.id }, include: { contact: true, lead: true, organization: true } });
+      return tx.opportunity.findUnique({ where: { id: created.id }, include: { contact: true, lead: true, organization: true, customer: true } });
     });
     return success(res, opportunity, 'Lead converted to opportunity');
   } catch (err: any) {
@@ -213,12 +244,14 @@ export const qualifyLead = async (req: AuthRequest, res: Response) => {
           notes: lead.notes,
         },
       });
+      const customer = await ensureCustomerForLead(tx, lead, contact);
       const created = await tx.opportunity.create({
         data: {
           title: req.body.title || `${lead.firstName} ${lead.lastName} - ${lead.company || 'Opportunity'}`,
           leadId: lead.id,
           contactId: contact.id,
           organizationId: lead.organizationId,
+          customerId: customer.id,
           value: Number(req.body.value ?? lead.value ?? 0),
           currency: req.body.currency || 'USD',
           stage: 'QUALIFICATION',
@@ -230,13 +263,13 @@ export const qualifyLead = async (req: AuthRequest, res: Response) => {
       await tx.lead.update({ where: { id: lead.id }, data: { status: 'CONVERTED', qualifiedAt: new Date() } });
       await logCrmActivity(tx, req.user!.id, {
         type: 'CONVERSION',
-        subject: 'Lead qualified into opportunity',
-        description: `Created contact and opportunity ${created.title}`,
+        subject: 'Lead qualified into customer and opportunity',
+        description: `Created or linked customer ${customer.name}, contact, and opportunity ${created.title}`,
         leadId: lead.id,
         contactId: contact.id,
         opportunityId: created.id,
       });
-      return tx.opportunity.findUnique({ where: { id: created.id }, include: { contact: true, lead: true, organization: true } });
+      return tx.opportunity.findUnique({ where: { id: created.id }, include: { contact: true, lead: true, organization: true, customer: true } });
     });
     return success(res, opportunity, 'Lead qualified and converted');
   } catch (err: any) {

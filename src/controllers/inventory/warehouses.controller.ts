@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import prisma from '../../lib/prisma';
 import { success, paginated, error } from '../../utils/response';
 import { handlePrismaError } from '../../utils/prismaError';
+import { pickDefined } from '../../utils/payload';
 
 export const getWarehouses = async (req: Request, res: Response) => {
   try {
@@ -17,7 +18,10 @@ export const getWarehouses = async (req: Request, res: Response) => {
 
 export const createWarehouse = async (req: Request, res: Response) => {
   try {
-    const wh = await prisma.warehouse.create({ data: req.body });
+    const name = String(req.body.name || '').trim();
+    const code = String(req.body.code || '').trim().toUpperCase();
+    if (!name || !code) return error(res, 'Warehouse name and code are required.', 400);
+    const wh = await prisma.warehouse.create({ data: { ...pickDefined(req.body, ['parentId', 'type', 'address', 'city', 'country', 'isDefault', 'isActive']), name, code } as any });
     return success(res, wh, 'Warehouse created', 201);
   } catch (err: any) {
     return handlePrismaError(res, err);
@@ -26,7 +30,7 @@ export const createWarehouse = async (req: Request, res: Response) => {
 
 export const updateWarehouse = async (req: Request, res: Response) => {
   try {
-    const wh = await prisma.warehouse.update({ where: { id: req.params.id }, data: req.body });
+    const wh = await prisma.warehouse.update({ where: { id: req.params.id }, data: pickDefined(req.body, ['name', 'code', 'parentId', 'type', 'address', 'city', 'country', 'isDefault', 'isActive']) as any });
     return success(res, wh, 'Warehouse updated');
   } catch (err: any) {
     return handlePrismaError(res, err);

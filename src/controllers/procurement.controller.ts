@@ -377,6 +377,14 @@ export const createSupplierPayment = async (req: Request, res: Response) => {
   try {
     const amount = new D(req.body.amount || 0);
     if (!req.body.supplierId || amount.lte(0)) return error(res, 'Supplier and a positive payment amount are required', 400);
+    if (req.body.type === 'INVOICE_PAYMENT' && !req.body.purchaseInvoiceId) return error(res, 'Select a purchase invoice or change the payment type to Advance', 400);
+    if (req.body.purchaseInvoiceId) {
+      const invoice = await prisma.purchaseInvoice.findFirst({ where: { id: req.body.purchaseInvoiceId } });
+      if (!invoice) return error(res, 'The selected purchase invoice does not exist', 400);
+      if (invoice.supplierId !== req.body.supplierId) return error(res, 'The selected invoice belongs to a different supplier', 400);
+      if (['PAID', 'CANCELLED'].includes(invoice.status)) return error(res, `Cannot pay an invoice with status ${invoice.status}`, 400);
+      if (amount.gt(invoice.outstandingAmount || invoice.total)) return error(res, 'Payment amount cannot exceed the invoice outstanding amount', 400);
+    }
     const doc = await (prisma as any).supplierPayment.create({ data: {
       paymentNo: await nextNo('supplierPayment', 'paymentNo', 'SPAY'), supplierId: req.body.supplierId,
       purchaseOrderId: req.body.purchaseOrderId || undefined, purchaseInvoiceId: req.body.purchaseInvoiceId || undefined,
@@ -409,7 +417,19 @@ export const addSupplierCommunication = async (req: Request, res: Response) => {
   catch (err: any) { return handlePrismaError(res, err); }
 };
 
-export const getSupplierCommunications = async (req: Request, res: Response) => list(res, 'supplierCommunicationLog', req, req.query.supplierId ? { supplierId: req.query.supplierId } : {}, {});
+export const getSupplierCommunications = async (req: Request, res: Response) => {
+  try {
+    const p = page(req);
+    const where = req.query.supplierId ? { supplierId: String(req.query.supplierId) } : {};
+    const [items, total] = await Promise.all([
+      (prisma as any).supplierCommunicationLog.findMany({ where, orderBy: { sentAt: 'desc' }, skip: (p.page - 1) * p.limit, take: p.limit }),
+      (prisma as any).supplierCommunicationLog.count({ where }),
+    ]);
+    return paginated(res, items, total, p.page, p.limit);
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
 
 export const getProcurementTracker = async (req: Request, res: Response) => {
   try {

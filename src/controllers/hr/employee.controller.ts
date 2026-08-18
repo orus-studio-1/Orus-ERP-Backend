@@ -6,6 +6,7 @@ import { success, paginated, error } from '../../utils/response';
 import { handlePrismaError } from '../../utils/prismaError';
 import { generateEmployeeId } from '../../utils/generate';
 import { ensureCompanyDefaultRoles } from '../../utils/accessControl';
+import { AuthRequest } from '../../middleware/auth';
 
 // ---- EMPLOYEES ----
 export const getEmployees = async (req: Request, res: Response) => {
@@ -69,7 +70,7 @@ export const createEmployee = async (req: Request, res: Response) => {
     const {
       password, firstName, lastName, phone, departmentId, positionId, managerId,
       hireDate, salary, salaryType, address, city, country, emergencyName, emergencyPhone,
-      role, roleIds = [], employmentType, branch, grade, gender, dateOfBirth, maritalStatus,
+      roleIds = [], employmentType, branch, grade, gender, dateOfBirth, maritalStatus,
       workLocation, personalEmail, companyEmail, noticePeriodDays, bankAccount, bankName, taxId,
     } = req.body;
     const email = String(req.body.email || '').trim().toLowerCase();
@@ -80,15 +81,22 @@ export const createEmployee = async (req: Request, res: Response) => {
     if (existingUser) return error(res, 'This email is already registered. Use a different email, or edit the existing user access instead of creating a new employee.', 400);
 
     const companyId = (req as any).user?.companyId;
+    if (!companyId) return error(res, 'A company-scoped administrator is required', 403);
     const requestedRoleIds = Array.isArray(roleIds) ? roleIds : [];
+    const uniqueRequestedRoleIds = Array.from(new Set<string>(requestedRoleIds.filter(Boolean)));
+    if (uniqueRequestedRoleIds.length) {
+      const validRoles = await prisma.accessRole.findMany({ where: { id: { in: uniqueRequestedRoleIds }, companyId, isActive: true } });
+      if (validRoles.length !== uniqueRequestedRoleIds.length) return error(res, 'One or more selected access roles are invalid for this company', 400);
+      if (validRoles.some((accessRole) => accessRole.isSuperAdmin) && !(req as AuthRequest).access?.isSuperAdmin) return error(res, 'Only a Super Admin can assign the Super Admin role', 403);
+    }
     const hashed = await bcrypt.hash(password || crypto.randomBytes(32).toString('hex'), 10);
     const employeeId = await generateEmployeeId();
 
     const result = await prisma.$transaction(async (tx) => {
       const user = await tx.user.create({
-        data: { email, password: hashed, firstName, lastName, phone, role: role || 'EMPLOYEE', companyId, isActive: Boolean(password) },
+        data: { email, password: hashed, firstName, lastName, phone, role: 'EMPLOYEE', companyId, isActive: Boolean(password) },
       });
-      let uniqueRoleIds = Array.from(new Set(requestedRoleIds.filter(Boolean)));
+      let uniqueRoleIds = uniqueRequestedRoleIds;
       if (!uniqueRoleIds.length && companyId) {
         const roles = await ensureCompanyDefaultRoles(companyId, tx);
         if (roles.EMPLOYEE_SELF_SERVICE?.id) uniqueRoleIds = [roles.EMPLOYEE_SELF_SERVICE.id];

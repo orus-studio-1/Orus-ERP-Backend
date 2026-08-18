@@ -35,11 +35,11 @@ async function fiscalContext(tx: Tx, postingDate: Date) {
 }
 
 export async function ensureLedgerAccount(tx: Tx, code: string, name: string, type: 'ASSET' | 'LIABILITY' | 'REVENUE' | 'EXPENSE' | 'EQUITY', flags: any = {}) {
-  return tx.account.upsert({
-    where: { code },
-    update: { ...flags, isGroup: false, isActive: true },
-    create: { code, name, type, rootType: type, currency: 'USD', isGroup: false, ...flags },
-  });
+  const existing = await tx.account.findFirst({ where: { code } });
+  if (existing) {
+    return tx.account.update({ where: { id: existing.id }, data: { ...flags, isGroup: false, isActive: true } });
+  }
+  return tx.account.create({ data: { code, name, type, rootType: type, currency: 'USD', isGroup: false, ...flags } });
 }
 
 async function validateAccounts(tx: Tx, lines: LedgerLineInput[], postingDate: Date) {

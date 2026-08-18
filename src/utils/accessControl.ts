@@ -105,7 +105,7 @@ const DEFAULT_ROLE_RULES: Record<string, { title: string; modules: string[]; act
   SALES_MANAGER: { title: 'Sales Manager', modules: ['dashboard', 'sales', 'invoicing', 'customers', 'crm'], actions: ['READ', 'CREATE', 'WRITE', 'SUBMIT', 'REPORT', 'PRINT', 'EXPORT'] },
   INVENTORY_MANAGER: { title: 'Inventory Manager', modules: ['dashboard', 'inventory', 'suppliers', 'procurement'], actions: ['READ', 'CREATE', 'WRITE', 'DELETE', 'SUBMIT', 'REPORT', 'EXPORT', 'IMPORT'] },
   PROJECT_MANAGER: { title: 'Project Manager', modules: ['dashboard', 'projects'], actions: ['READ', 'CREATE', 'WRITE', 'DELETE', 'APPROVE', 'REPORT'] },
-  EMPLOYEE_SELF_SERVICE: { title: 'Employee Self Service', modules: ['dashboard', 'hr'], actions: ['READ', 'CREATE'] },
+  EMPLOYEE_SELF_SERVICE: { title: 'Employee Self Service', modules: ['dashboard'], actions: ['READ'] },
 };
 
 export async function ensureCompanyDefaultRoles(companyId: string, tx: any = prisma) {
@@ -129,6 +129,7 @@ export async function ensureCompanyDefaultRoles(companyId: string, tx: any = pri
     const allowed = rule.modules.includes('*')
       ? permissions
       : permissions.filter((p: any) => rule.modules.includes(p.module) && (!rule.actions || rule.actions.includes(p.action)));
+    await tx.rolePermission.deleteMany({ where: { roleId: role.id } });
     if (allowed.length) {
       await tx.rolePermission.createMany({
         data: allowed.map((permission: any) => ({ roleId: role.id, permissionId: permission.id, effect: 'ALLOW' })),
@@ -157,8 +158,7 @@ export async function computeEffectiveAccess(userId: string): Promise<EffectiveA
   });
   if (!user) return { isSuperAdmin: false, permissions: [], deniedPermissions: [], roles: [] };
 
-  const legacySuper = ['SUPER_ADMIN', 'ADMIN'].includes(user.role);
-  const isSuperAdmin = legacySuper || user.accessRoles.some((ur: any) => ur.role?.isSuperAdmin);
+  const isSuperAdmin = user.accessRoles.some((ur: any) => ur.role?.isSuperAdmin && ur.role?.isActive);
   if (isSuperAdmin) {
     return {
       companyId: user.companyId,

@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import prisma from '../../lib/prisma';
 import { success, paginated, error } from '../../utils/response';
 import { handlePrismaError } from '../../utils/prismaError';
+import { pickDefined } from '../../utils/payload';
 
 export const getUnits = async (req: Request, res: Response) => {
   try {
@@ -14,7 +15,8 @@ export const getUnits = async (req: Request, res: Response) => {
 
 export const createUnit = async (req: Request, res: Response) => {
   try {
-    const unit = await prisma.unit.create({ data: req.body });
+    if (!String(req.body.name || '').trim() || !String(req.body.symbol || '').trim()) return error(res, 'Unit name and symbol are required', 400);
+    const unit = await prisma.unit.create({ data: pickDefined(req.body, ['name', 'symbol']) as any });
     return success(res, unit, 'Unit created', 201);
   } catch (err: any) {
     return handlePrismaError(res, err);

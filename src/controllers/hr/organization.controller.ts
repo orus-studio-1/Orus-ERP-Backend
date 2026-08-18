@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import prisma from '../../lib/prisma';
 import { success, error } from '../../utils/response';
 import { handlePrismaError } from '../../utils/prismaError';
+import { pickDefined } from '../../utils/payload';
 
 // ---- DEPARTMENTS ----
 export const getDepartments = async (req: Request, res: Response) => {
@@ -21,7 +22,7 @@ export const createDepartment = async (req: Request, res: Response) => {
     const name = String(req.body.name || '').trim();
     const code = String(req.body.code || '').trim().toUpperCase();
     if (!name || !code) return error(res, 'Department name and code are required', 400);
-    const dept = await prisma.department.create({ data: { ...req.body, name, code } });
+    const dept = await prisma.department.create({ data: { ...pickDefined(req.body, ['description']), name, code } });
     return success(res, dept, 'Department created', 201);
   } catch (err: any) {
     return handlePrismaError(res, err);
@@ -30,7 +31,7 @@ export const createDepartment = async (req: Request, res: Response) => {
 
 export const updateDepartment = async (req: Request, res: Response) => {
   try {
-    const dept = await prisma.department.update({ where: { id: req.params.id }, data: req.body });
+    const dept = await prisma.department.update({ where: { id: req.params.id }, data: pickDefined(req.body, ['name', 'code', 'description']) });
     return success(res, dept, 'Department updated');
   } catch (err: any) {
     return handlePrismaError(res, err);

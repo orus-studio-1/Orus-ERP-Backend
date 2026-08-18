@@ -5,6 +5,7 @@ import { success, paginated, error } from '../utils/response';
 import { handlePrismaError } from '../utils/prismaError';
 import { generateJournalNo } from '../utils/generate';
 import { postToLedger, reverseLedgerForVoucher } from '../services/accounting/ledger.service';
+import { pickDefined } from '../utils/payload';
 
 function lineTotals(lines: any[] = []) {
   return lines.reduce((acc, line) => ({ debit: acc.debit + Number(line.debit || 0), credit: acc.credit + Number(line.credit || 0) }), { debit: 0, credit: 0 });
@@ -57,8 +58,48 @@ export const getAccount = async (req: Request, res: Response) => {
 
 export const createAccount = async (req: Request, res: Response) => {
   try {
-    if (!req.body.code || !req.body.name || !req.body.type) return error(res, 'code, name and type are required', 400);
-    const account = await prisma.account.create({ data: { ...req.body, rootType: req.body.rootType || req.body.type } });
+    const code = String(req.body.code || '').trim().toUpperCase();
+    const name = String(req.body.name || '').trim();
+    const type = String(req.body.type || '').toUpperCase();
+    const validTypes = ['ASSET', 'LIABILITY', 'EQUITY', 'REVENUE', 'EXPENSE'];
+    if (!code || !name || !type) return error(res, 'Code, name and type are required.', 400);
+    if (!validTypes.includes(type)) return error(res, 'Select a valid account type.', 400);
+
+    let frozenTillDate: Date | null = null;
+    if (req.body.freezeAccount && req.body.frozenTillDate) {
+      frozenTillDate = new Date(`${String(req.body.frozenTillDate).slice(0, 10)}T00:00:00.000Z`);
+      if (Number.isNaN(frozenTillDate.getTime())) return error(res, 'Frozen Till must be a valid date.', 400);
+    }
+
+    const parentId = req.body.parentId ? String(req.body.parentId) : null;
+    if (parentId) {
+      const parent = await prisma.account.findFirst({ where: { id: parentId } });
+      if (!parent) return error(res, 'The selected parent account does not exist.', 400);
+      if (!parent.isGroup) return error(res, 'The selected parent must be a group account.', 400);
+    }
+
+    const account = await prisma.account.create({
+      data: {
+        code,
+        name,
+        type: type as any,
+        rootType: type as any,
+        subType: req.body.subType ? String(req.body.subType).trim() : null,
+        parentId,
+        description: req.body.description ? String(req.body.description).trim() : null,
+        currency: String(req.body.currency || 'USD').trim().toUpperCase(),
+        isGroup: Boolean(req.body.isGroup),
+        freezeAccount: Boolean(req.body.freezeAccount),
+        frozenTillDate,
+        isDefaultCash: Boolean(req.body.isDefaultCash),
+        isDefaultBank: Boolean(req.body.isDefaultBank),
+        isDefaultReceivable: Boolean(req.body.isDefaultReceivable),
+        isDefaultPayable: Boolean(req.body.isDefaultPayable),
+        isDefaultTax: Boolean(req.body.isDefaultTax),
+        isDefaultRoundOff: Boolean(req.body.isDefaultRoundOff),
+        isDefaultRetainedEarnings: Boolean(req.body.isDefaultRetainedEarnings),
+      },
+    });
     return success(res, account, 'Account created', 201);
   } catch (err: any) {
     return handlePrismaError(res, err);
@@ -67,7 +108,8 @@ export const createAccount = async (req: Request, res: Response) => {
 
 export const updateAccount = async (req: Request, res: Response) => {
   try {
-    const account = await prisma.account.update({ where: { id: req.params.id }, data: req.body });
+    const data = pickDefined(req.body, ['code', 'name', 'type', 'subType', 'parentId', 'description', 'rootType', 'isGroup', 'freezeAccount', 'frozenTillDate', 'isDefaultCash', 'isDefaultBank', 'isDefaultReceivable', 'isDefaultPayable', 'isDefaultTax', 'isDefaultRoundOff', 'isDefaultRetainedEarnings', 'isActive', 'currency']);
+    const account = await prisma.account.update({ where: { id: req.params.id }, data: data as any });
     return success(res, account, 'Account updated');
   } catch (err: any) {
     return handlePrismaError(res, err);
@@ -251,7 +293,7 @@ export const createFiscalYear = async (req: Request, res: Response) => {
 
 export const updatePeriod = async (req: Request, res: Response) => {
   try {
-    const period = await prisma.period.update({ where: { id: req.params.id }, data: req.body });
+    const period = await prisma.period.update({ where: { id: req.params.id }, data: pickDefined(req.body, ['name', 'startDate', 'endDate', 'fiscalYearId', 'isClosed']) as any });
     return success(res, period, 'Period updated');
   } catch (err: any) {
     return handlePrismaError(res, err);
@@ -270,7 +312,7 @@ export const getCostCenters = async (_req: Request, res: Response) => {
 export const createCostCenter = async (req: Request, res: Response) => {
   try {
     if (!req.body.code || !req.body.name) return error(res, 'code and name are required', 400);
-    const item = await prisma.costCenter.create({ data: req.body });
+    const item = await prisma.costCenter.create({ data: pickDefined(req.body, ['code', 'name', 'parentId', 'isGroup', 'isActive']) as any });
     return success(res, item, 'Cost center created', 201);
   } catch (err: any) {
     return handlePrismaError(res, err);
