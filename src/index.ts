@@ -36,13 +36,20 @@ import prisma from './lib/prisma';
 const app = express();
 
 app.use(helmet());
-const allowedOrigins = [
+const normalizeOrigin = (value: string) => value.trim().replace(/\/$/, '');
+const configuredOrigins = [process.env.FRONTEND_URL, process.env.CORS_ORIGINS]
+  .filter(Boolean)
+  .flatMap((value) => String(value).split(','))
+  .map(normalizeOrigin)
+  .filter(Boolean);
+const allowedOrigins = new Set([
   'http://localhost:3000',
   'http://localhost:8081',
   'http://127.0.0.1:3000',
   'http://127.0.0.1:8081',
-  process.env.FRONTEND_URL,
-].filter(Boolean) as string[];
+  'https://erp-frontend-qreen.vercel.app',
+  ...configuredOrigins,
+]);
 
 app.use(cors({
   origin: (origin, callback) => {
@@ -53,7 +60,7 @@ app.use(cors({
         return hostname === 'localhost' || hostname === '127.0.0.1';
       } catch { return false; }
     })();
-    if (!origin || allowedOrigins.includes(origin) || isLocalDevelopmentOrigin) {
+    if (!origin || allowedOrigins.has(normalizeOrigin(origin)) || isLocalDevelopmentOrigin) {
       return callback(null, true);
     }
     return callback(new Error('Origin is not allowed by CORS'));
