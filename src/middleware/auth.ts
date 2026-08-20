@@ -1,12 +1,14 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
 import { error } from '../utils/response';
 import { computeEffectiveAccess, firstPathSegment, getActionForRequest, hasPermission, EffectiveAccess } from '../utils/accessControl';
 import { runWithTenant } from '../utils/tenant';
 import prisma from '../lib/prisma';
 
 export interface AuthRequest extends Request {
-  user?: { id: string; email: string; role: string; companyId?: string | null; companySlug?: string | null };
+  user?: { id: string; email: string; role: string; tenantId?: string | null; companyId?: string | null; companySlug?: string | null; branchId?: string | null; twoFactorVerified?: boolean };
+  context?: { tenantId?: string | null; companyId?: string | null; branchId?: string | null; userId: string; requestId: string };
   access?: EffectiveAccess;
   permissionGatePassed?: boolean;
 }
@@ -50,16 +52,17 @@ export const authenticate = async (req: AuthRequest, res: Response, next: NextFu
       error(res, 'Your account is not assigned to a company. Contact an administrator.', 403);
       return;
     }
-    req.user = {
-      id: currentUser.id,
-      email: currentUser.email,
-      role: currentUser.role,
-      companyId: currentUser.companyId,
-      companySlug: currentUser.company?.slug || decoded.companySlug || null,
-    };
+    const companyId = decoded.companyId || currentUser.companyId;
+    const company = companyId ? await prisma.company.findUnique({ where: { id: companyId }, select: { tenantId: true, slug: true } }) : null;
+    if (companyId !== currentUser.companyId) {
+      const membership = await prisma.companyMembership.findFirst({ where: { userId: currentUser.id, companyId, isActive: true } });
+      if (!membership) { error(res, 'Token company is no longer accessible', 403, undefined, 'COMPANY_FORBIDDEN'); return; }
+    }
+    req.user = { id: currentUser.id, email: currentUser.email, role: currentUser.role, tenantId: decoded.tenantId || company?.tenantId, companyId, companySlug: company?.slug || decoded.companySlug || null, branchId: decoded.branchId, twoFactorVerified: Boolean(decoded.twoFactorVerified) };
+    req.context = { tenantId: req.user.tenantId, companyId, branchId: req.user.branchId, userId: currentUser.id, requestId: String(req.headers['x-request-id'] || crypto.randomUUID()) };
     req.access = await computeEffectiveAccess(decoded.id);
     if (!req.user.companyId && req.access.companyId) req.user.companyId = req.access.companyId;
-    runWithTenant(req.user.companyId, () => next());
+    runWithTenant(req.context, () => next());
   } catch (err: any) {
     console.error('Unable to load authenticated session:', err);
     error(res, 'Unable to load your session. Please try again.', 500);

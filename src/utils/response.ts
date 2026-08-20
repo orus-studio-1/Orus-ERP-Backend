@@ -9,5 +9,5 @@ export const paginated = (res: Response, items: any[], total: number, page: numb
     data: { items, total, page, limit, totalPages: Math.ceil(total / limit) },
   });
 
-export const error = (res: Response, message = 'An error occurred', status = 400, errors?: any) =>
-  res.status(status).json({ success: false, message, errors });
+export const error = (res: Response, message = 'An error occurred', status = 400, errors?: any, code = 'REQUEST_FAILED') =>
+  res.status(status).json({ success: false, message, code, ...(errors ? { errors } : {}) });

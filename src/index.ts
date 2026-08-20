@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
+import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -30,6 +31,8 @@ import suppliersRoutes from './routes/suppliers.routes';
 import dashboardRoutes from './routes/dashboard.routes';
 import accessRoutes from './routes/access.routes';
 import notificationRoutes from './routes/notifications.routes';
+import platformRoutes from './routes/platform.routes';
+import { idempotency, mutationAudit, requestContext } from './middleware/platform';
 import { runDueSubscriptionsJob } from './controllers/invoicingExtras.controller';
 import prisma from './lib/prisma';
 
@@ -96,8 +99,10 @@ app.use(
 );
 
 app.use(morgan('dev'));
+app.use(cookieParser());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+app.use(requestContext);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/access', accessRoutes);
@@ -120,6 +125,30 @@ app.use('/api/suppliers', suppliersRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/notifications', notificationRoutes);
 
+// Versioned API is canonical. Legacy /api mounts remain during client migration.
+app.use('/api/v1', mutationAudit);
+app.use('/api/v1/auth', authRoutes);
+app.use('/api/v1/access', accessRoutes);
+app.use('/api/v1/accounting', accountingRoutes);
+app.use('/api/v1/inventory', inventoryRoutes);
+app.use('/api/v1/hr', hrRoutes);
+app.use('/api/v1/crm', crmRoutes);
+app.use('/api/v1/sales', salesRoutes);
+app.use('/api/v1/invoicing', invoicingRoutes);
+app.use('/api/v1/invoicing', invoicingExtrasRoutes);
+app.use('/api/v1/invoices', invoicesRoutes);
+app.use('/api/v1/payments', paymentsRoutes);
+app.use('/api/v1/products', productsRoutes);
+app.use('/api/v1/sales-orders', salesOrdersRoutes);
+app.use('/api/v1/delivery-notes', deliveryNotesRoutes);
+app.use('/api/v1/procurement', procurementRoutes);
+app.use('/api/v1/projects', projectsRoutes);
+app.use('/api/v1/customers', customersRoutes);
+app.use('/api/v1/suppliers', suppliersRoutes);
+app.use('/api/v1/dashboard', dashboardRoutes);
+app.use('/api/v1/notifications', notificationRoutes);
+app.use('/api/v1/platform', platformRoutes);
+
 app.get('/health', (req, res) => {
   prisma.$queryRaw`SELECT 1`
     .then(() => res.json({ status: 'OK', database: 'OK', timestamp: new Date(), version: '1.0.0' }))
@@ -139,10 +168,21 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
   });
 });
 
-const PORT = process.env.PORT || 5000;
-const server = app.listen(PORT, () => {
-  console.log(`Orus ERP Server running on port ${PORT}`);
+const PORT = Number(process.env.PORT || 5000);
+const HOST = process.env.HOST || '0.0.0.0';
+const server = app.listen(PORT, HOST, () => {
+  console.log(`Orus ERP Server running at http://${HOST}:${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV}`);
+});
+
+server.on('error', (err: NodeJS.ErrnoException) => {
+  const detail = err.code === 'EADDRINUSE'
+    ? `Port ${PORT} is already in use. Stop the existing process or set a different PORT.`
+    : err.code === 'EACCES' || err.code === 'EPERM'
+      ? `Cannot bind to ${HOST}:${PORT}. Check host permissions or use HOST=127.0.0.1.`
+      : err.message;
+  console.error(`HTTP server failed to start: ${detail}`);
+  process.exitCode = 1;
 });
 
 if (process.env.ENABLE_RECURRING_INVOICE_SCHEDULER === 'true') {
