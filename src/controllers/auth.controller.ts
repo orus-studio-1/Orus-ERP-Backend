@@ -268,6 +268,20 @@ export const logout = async (req: AuthRequest, res: Response) => {
   }
 };
 
+export const refresh = async (req: AuthRequest, res: Response) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user!.id },
+      include: { company: true },
+    });
+    if (!user || !user.isActive) return error(res, 'User not found or inactive', 401);
+    const payload = await buildAuthPayload(user);
+    return success(res, { ...payload, accessToken: payload.token }, 'Token refreshed');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
 export const getUsers = async (req: Request, res: Response) => {
   try {
     const companyId = (req as AuthRequest).user?.companyId;
@@ -284,3 +298,4 @@ export const getUsers = async (req: Request, res: Response) => {
     return handlePrismaError(res, err);
   }
 };
+

@@ -3,6 +3,7 @@ import {
   register,
   login,
   logout,
+  refresh,
   getMe,
   updateProfile,
   changePassword,
@@ -21,7 +22,9 @@ router.get('/check-slug/:slug', checkSlugAvailability);
 router.get('/workspace/:slug', getWorkspaceInfo);
 router.post('/register', authLimiter, register);
 router.post('/login', authLimiter, login);
+router.post('/refresh', authenticate, refresh);
 router.post('/logout', authenticate, logout);
+
 
 router.get('/me', authenticate, getMe);
 router.put('/profile', authenticate, updateProfile);
