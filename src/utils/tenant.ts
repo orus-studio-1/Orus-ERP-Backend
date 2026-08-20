@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'async_hooks';
+import { Prisma } from '@prisma/client';
 
-type TenantContext = { companyId?: string | null };
+export type TenantContext = { tenantId?: string | null; companyId?: string | null; branchId?: string | null; userId?: string; requestId?: string };
 
 const tenantStorage = new AsyncLocalStorage<TenantContext>();
 
@@ -87,13 +88,23 @@ export const tenantModels = new Set([
   'Comment',
   'Notification',
 ]);
+for (const model of Prisma.dmmf.datamodel.models) {
+  if (model.fields.some((field) => field.name === 'companyId')) tenantModels.add(model.name);
+}
+export const tenantIdModels = new Set(Prisma.dmmf.datamodel.models.filter((model) => model.fields.some((field) => field.name === 'tenantId')).map((model) => model.name.toLowerCase()));
 const normalizedTenantModels = new Set(Array.from(tenantModels).map((model) => model.toLowerCase()));
 
 const readOperations = new Set(['findMany', 'findFirst', 'findUnique', 'count', 'aggregate', 'groupBy']);
 
-export function runWithTenant<T>(companyId: string | null | undefined, callback: () => T) {
-  return tenantStorage.run({ companyId }, callback);
+export function runWithTenant<T>(context: TenantContext | string | null | undefined, callback: () => T) {
+  let store: TenantContext;
+  if (typeof context === 'string') store = { companyId: context };
+  else if (context == null) store = { companyId: null };
+  else store = context;
+  return tenantStorage.run(store, callback);
 }
+
+export function currentTenantContext() { return tenantStorage.getStore(); }
 
 export function currentCompanyId() {
   return tenantStorage.getStore()?.companyId || null;
@@ -105,30 +116,36 @@ export function tenantWhere(companyId: string | null | undefined) {
 
 export function applyTenantToPrismaArgs(model: string | undefined, operation: string, args: any) {
   const companyId = currentCompanyId();
-  if (!companyId || !model || !normalizedTenantModels.has(model.toLowerCase())) return args;
+  const tenantId = currentTenantContext()?.tenantId;
+  if (!model) return args;
+  const normalized = model.toLowerCase();
+  const usesCompany = normalizedTenantModels.has(normalized);
+  const usesTenant = tenantIdModels.has(normalized);
+  if ((!usesCompany || !companyId) && (!usesTenant || !tenantId)) return args;
+  const scope = { ...(usesTenant && tenantId ? { tenantId } : {}), ...(usesCompany && companyId ? { companyId } : {}) };
 
   if (readOperations.has(operation)) {
-    return { ...args, where: { ...(args?.where || {}), companyId } };
+    return { ...args, where: { ...(args?.where || {}), ...scope } };
   }
 
   if (operation === 'create') {
-    return { ...args, data: { ...(args?.data || {}), companyId: args?.data?.companyId || companyId } };
+    return { ...args, data: { ...(args?.data || {}), ...scope } };
   }
 
   if (operation === 'createMany') {
     const data = Array.isArray(args?.data) ? args.data : [];
-    return { ...args, data: data.map((row: any) => ({ ...row, companyId: row.companyId || companyId })) };
+    return { ...args, data: data.map((row: any) => ({ ...row, ...scope })) };
   }
 
   if (['update', 'delete', 'updateMany', 'deleteMany'].includes(operation)) {
-    return { ...args, where: { ...(args?.where || {}), companyId } };
+    return { ...args, where: { ...(args?.where || {}), ...scope } };
   }
 
   if (operation === 'upsert') {
     return {
       ...args,
-      where: { ...(args?.where || {}), companyId },
-      create: { ...(args?.create || {}), companyId: args?.create?.companyId || companyId },
+      where: { ...(args?.where || {}), ...scope },
+      create: { ...(args?.create || {}), ...scope },
     };
   }
 

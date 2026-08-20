@@ -1,3 +1,16 @@
+-- These shared enums existed in the original database but were omitted from the
+-- migration history. Keep creation duplicate-safe for already-provisioned databases
+-- while making a zero-state/shadow replay deterministic.
+DO $$ BEGIN
+  CREATE TYPE "DocumentType" AS ENUM (
+    'QUOTATION', 'SALES_ORDER', 'DELIVERY_NOTE', 'SALES_INVOICE',
+    'PAYMENT_ENTRY', 'CREDIT_NOTE', 'PURCHASE_ORDER', 'PURCHASE_INVOICE',
+    'EMPLOYEE', 'ATTENDANCE', 'LEAVE_APPLICATION', 'PAYROLL_ENTRY',
+    'SALARY_SLIP', 'EMPLOYEE_LIFECYCLE'
+  );
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE TYPE "DocumentStatus" AS ENUM ('DRAFT', 'SUBMITTED', 'CANCELLED'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
 DO $$ BEGIN CREATE TYPE "ValuationMethod" AS ENUM ('FIFO', 'MOVING_AVERAGE', 'STANDARD'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN CREATE TYPE "StockReservationStatus" AS ENUM ('ACTIVE', 'PARTIAL', 'FULFILLED', 'RELEASED'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN CREATE TYPE "StockEntryPurpose" AS ENUM ('MATERIAL_RECEIPT', 'MATERIAL_ISSUE', 'MATERIAL_TRANSFER', 'STOCK_RECONCILIATION', 'OPENING_STOCK'); EXCEPTION WHEN duplicate_object THEN NULL; END $$;

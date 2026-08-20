@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
+import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -30,6 +31,8 @@ import suppliersRoutes from './routes/suppliers.routes';
 import dashboardRoutes from './routes/dashboard.routes';
 import accessRoutes from './routes/access.routes';
 import notificationRoutes from './routes/notifications.routes';
+import platformRoutes from './routes/platform.routes';
+import { idempotency, mutationAudit, requestContext } from './middleware/platform';
 import { runDueSubscriptionsJob } from './controllers/invoicingExtras.controller';
 import prisma from './lib/prisma';
 
@@ -96,8 +99,10 @@ app.use(
 );
 
 app.use(morgan('dev'));
+app.use(cookieParser());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+app.use(requestContext);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/access', accessRoutes);
@@ -119,6 +124,30 @@ app.use('/api/customers', customersRoutes);
 app.use('/api/suppliers', suppliersRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/notifications', notificationRoutes);
+
+// Versioned API is canonical. Legacy /api mounts remain during client migration.
+app.use('/api/v1', mutationAudit);
+app.use('/api/v1/auth', authRoutes);
+app.use('/api/v1/access', accessRoutes);
+app.use('/api/v1/accounting', accountingRoutes);
+app.use('/api/v1/inventory', inventoryRoutes);
+app.use('/api/v1/hr', hrRoutes);
+app.use('/api/v1/crm', crmRoutes);
+app.use('/api/v1/sales', salesRoutes);
+app.use('/api/v1/invoicing', invoicingRoutes);
+app.use('/api/v1/invoicing', invoicingExtrasRoutes);
+app.use('/api/v1/invoices', invoicesRoutes);
+app.use('/api/v1/payments', paymentsRoutes);
+app.use('/api/v1/products', productsRoutes);
+app.use('/api/v1/sales-orders', salesOrdersRoutes);
+app.use('/api/v1/delivery-notes', deliveryNotesRoutes);
+app.use('/api/v1/procurement', procurementRoutes);
+app.use('/api/v1/projects', projectsRoutes);
+app.use('/api/v1/customers', customersRoutes);
+app.use('/api/v1/suppliers', suppliersRoutes);
+app.use('/api/v1/dashboard', dashboardRoutes);
+app.use('/api/v1/notifications', notificationRoutes);
+app.use('/api/v1/platform', platformRoutes);
 
 app.get('/health', (req, res) => {
   prisma.$queryRaw`SELECT 1`
