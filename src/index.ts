@@ -168,10 +168,21 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
   });
 });
 
-const PORT = process.env.PORT || 5000;
-const server = app.listen(PORT, () => {
-  console.log(`Orus ERP Server running on port ${PORT}`);
+const PORT = Number(process.env.PORT || 5000);
+const HOST = process.env.HOST || '0.0.0.0';
+const server = app.listen(PORT, HOST, () => {
+  console.log(`Orus ERP Server running at http://${HOST}:${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV}`);
+});
+
+server.on('error', (err: NodeJS.ErrnoException) => {
+  const detail = err.code === 'EADDRINUSE'
+    ? `Port ${PORT} is already in use. Stop the existing process or set a different PORT.`
+    : err.code === 'EACCES' || err.code === 'EPERM'
+      ? `Cannot bind to ${HOST}:${PORT}. Check host permissions or use HOST=127.0.0.1.`
+      : err.message;
+  console.error(`HTTP server failed to start: ${detail}`);
+  process.exitCode = 1;
 });
 
 if (process.env.ENABLE_RECURRING_INVOICE_SCHEDULER === 'true') {
