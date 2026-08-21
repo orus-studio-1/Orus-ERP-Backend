@@ -37,6 +37,8 @@ import { runDueSubscriptionsJob } from './controllers/invoicingExtras.controller
 import prisma from './lib/prisma';
 import { workOne } from './services/platform/job.service';
 import { processCrmReminders } from './services/crm/jobs';
+import { processSalesExpiry } from './services/sales/jobs';
+import { processInventoryMonitoring } from './services/inventory/jobs';
 
 const app = express();
 
@@ -196,6 +198,8 @@ if (process.env.ENABLE_RECURRING_INVOICE_SCHEDULER === 'true') {
 if (process.env.ENABLE_BACKGROUND_WORKER !== 'false') {
   setInterval(() => workOne().catch((err) => console.error('Background job worker failed', err)), 5_000);
   setInterval(() => processCrmReminders().catch((err) => console.error('CRM reminder worker failed', err)), 60_000);
+  setInterval(() => processSalesExpiry().catch((err) => console.error('Sales expiry worker failed', err)), 60_000);
+  setInterval(() => processInventoryMonitoring().catch((err) => console.error('Inventory monitoring worker failed', err)), 60 * 60 * 1000);
 }
 
 let shuttingDown = false;

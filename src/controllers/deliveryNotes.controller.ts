@@ -125,6 +125,14 @@ export const createDeliveryNoteFromSalesOrder = async (req: Request, res: Respon
       const order = await tx.salesOrder.findUnique({ where: { id: req.params.salesOrderId }, include: { items: { include: { product: true } } } });
       if (!order) throw new Error('Sales order not found');
       if (order.status === 'DRAFT' || order.status === 'CANCELLED') throw new Error('Only confirmed sales orders can be delivered');
+      const requested = new Map((req.body.items || []).map((i: any) => [i.salesOrderItemId || i.id, new Prisma.Decimal(i.quantity)]));
+      const sourceItems = order.items.map((item: any) => {
+        const remaining = new Prisma.Decimal(item.quantity).minus(item.deliveredQty);
+        const quantity = requested.size ? requested.get(item.id) : remaining;
+        if (quantity && new Prisma.Decimal(quantity as any).gt(remaining)) throw new Error(`Delivery quantity for ${item.product.sku} exceeds remaining quantity ${remaining}`);
+        return { ...item, quantity };
+      }).filter((item: any) => item.quantity && new Prisma.Decimal(item.quantity).gt(0));
+      if (!sourceItems.length) throw new Error('No quantities remain to be delivered');
       const deliveryNo = await nextDeliveryNo(tx);
       const created = await tx.deliveryNote.create({
         data: {
@@ -133,7 +141,8 @@ export const createDeliveryNoteFromSalesOrder = async (req: Request, res: Respon
           salesOrderId: order.id,
           date: new Date(),
           notes: order.notes,
-          items: { create: normalizeItems(order.items) },
+          warehouseId: req.body.warehouseId || order.sourceWarehouseId,
+          items: { create: normalizeItems(sourceItems) },
         },
         include: deliveryInclude,
       });

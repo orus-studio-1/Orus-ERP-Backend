@@ -10,8 +10,14 @@ import {
   getStockBalanceReport, getStockLedgerReport, getProjectedStockReport,
   getReservedStockReport, getWarehouseValuationReport, getItemWiseSalesReport, getGrossProfitReport, getSlowMovingStockReport,
   createManualStockReservation, createManualSlowMovingStock,
-  getProductAttributes, createProductAttribute, createUomConversion, getBatches, createBatch, getSerialNumbers, createSerialNumber,
+  getProductAttributes, createProductAttribute, createUomConversion, getBatches, createBatch, getSerialNumbers, createSerialNumber, amendStockEntry,
 } from '../controllers/inventory.controller';
+import {
+  approveReconciliation, barcodeLookup, cancelReconciliation, createBatchGenealogy, createReconciliation,
+  createTransferOrder, inventoryReport, listReconciliations, listTransferOrders,
+  materialRequestOperation, reconciliationTemplate, startReconciliation,
+  submitReconciliation, traceability, transferOperation, uploadCounts, upsertCustomerItemCode, upsertWarehouseRule,
+} from '../controllers/inventory/completion.controller';
 import { authenticate, requireModuleAccess } from '../middleware/auth';
 
 const router = Router();
@@ -32,6 +38,7 @@ router.route('/stock-movements').get(getStockMovements).post(createStockMovement
 router.route('/stock-entries').get(getStockEntries).post(createStockEntry);
 router.route('/stock-entries/:id').get(getStockEntry);
 router.patch('/stock-entries/:id/status', updateStockEntryStatus);
+router.post('/stock-entries/:id/amend', amendStockEntry);
 
 router.route('/price-lists').get(getPriceLists).post(createPriceList);
 router.route('/item-prices').get(getItemPrices).post(createItemPrice);
@@ -55,5 +62,22 @@ router.route('/attributes').get(getProductAttributes).post(createProductAttribut
 router.post('/uom-conversions', createUomConversion);
 router.route('/batches').get(getBatches).post(createBatch);
 router.route('/serial-numbers').get(getSerialNumbers).post(createSerialNumber);
+
+router.get('/barcode/:value', barcodeLookup);
+router.put('/products/:productId/warehouse-rules', upsertWarehouseRule);
+router.put('/products/:productId/customer-codes', upsertCustomerItemCode);
+router.post('/batch-genealogy', createBatchGenealogy);
+router.route('/reconciliations').get(listReconciliations).post(createReconciliation);
+router.get('/reconciliations/:id/template', reconciliationTemplate);
+router.post('/reconciliations/:id/start', startReconciliation);
+router.post('/reconciliations/:id/counts', uploadCounts);
+router.post('/reconciliations/:id/approve', approveReconciliation);
+router.post('/reconciliations/:id/submit', submitReconciliation);
+router.post('/reconciliations/:id/cancel', cancelReconciliation);
+router.route('/transfer-orders').get(listTransferOrders).post(createTransferOrder);
+for (const operation of ['submit', 'dispatch', 'receive', 'cancel']) router.post(`/transfer-orders/:id/${operation}`, (req, res) => { (req.params as any).operation = operation; return transferOperation(req, res); });
+for (const operation of ['submit', 'cancel', 'issue', 'create-po', 'create-work-order']) router.post(`/material-requests/:id/${operation}`, (req, res) => { (req.params as any).operation = operation; return materialRequestOperation(req, res); });
+router.get('/traceability/batches/:batchId', traceability);
+router.get('/reports/advanced/:type', inventoryReport);
 
 export default router;

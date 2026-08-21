@@ -66,16 +66,24 @@ export const createInvoiceFromSalesOrder = async (req: Request, res: Response) =
       if (order.status === 'DRAFT' || order.status === 'CANCELLED') throw new Error('Only confirmed sales orders can be invoiced');
 
       const invoiceNo = await nextDocumentNo(tx, 'SALES_INVOICE');
+      const requested = new Map((req.body.items || []).map((i: any) => [i.salesOrderItemId || i.id, new Prisma.Decimal(i.quantity)]));
       const sourceItems = order.items.map((item: any) => ({
+        salesOrderItemId: item.id,
         productId: item.productId,
         itemCode: item.product?.sku || '',
         description: item.description,
-        quantity: item.quantity,
+        quantity: requested.size ? requested.get(item.id) : new Prisma.Decimal(item.quantity).minus(item.billedQty),
         unitPrice: item.unitPrice,
         taxRate: item.taxRate,
         discount: item.discount,
         taxTemplateId: item.product?.defaultTaxTemplateId,
-      }));
+      })).filter((item: any) => item.quantity && new Prisma.Decimal(item.quantity).gt(0));
+      for (const item of sourceItems) {
+        const orderItem = order.items.find((row: any) => row.id === item.salesOrderItemId)!;
+        const remaining = new Prisma.Decimal(orderItem.quantity).minus(orderItem.billedQty);
+        if (new Prisma.Decimal(item.quantity as any).gt(remaining)) throw new Error(`Invoice quantity for ${orderItem.product.sku} exceeds remaining quantity ${remaining}`);
+      }
+      if (!sourceItems.length) throw new Error('No quantities remain to be invoiced');
       const normalizedItems = await normalizeInvoiceItems(tx, sourceItems);
       const totals = calculateInvoiceTotals(normalizedItems, order.discount);
       const created = await tx.salesInvoice.create({

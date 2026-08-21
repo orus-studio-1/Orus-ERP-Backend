@@ -1,7 +1,7 @@
 import { Prisma } from '@prisma/client';
 import { resolveItemPricing } from '../../services/inventory/pricing.service';
 
-export async function normalizeSalesItems(tx: any, items: any[] = [], context: { customerId?: string; priceListId?: string; currency?: string } = {}) {
+export async function normalizeSalesItems(tx: any, items: any[] = [], context: { customerId?: string; priceListId?: string; currency?: string; customerGroup?: string; territory?: string; salesChannel?: string } = {}) {
   const normalized = [];
   let subtotal = new Prisma.Decimal(0);
   let taxAmount = new Prisma.Decimal(0);
@@ -32,6 +32,10 @@ export async function normalizeSalesItems(tx: any, items: any[] = [], context: {
       priceListId: context.priceListId,
       currency: context.currency,
       quantity,
+      customerGroup: context.customerGroup,
+      territory: context.territory,
+      salesChannel: context.salesChannel,
+      unitId: item.uomId,
       explicitRate: item.unitPrice ?? item.rate,
       explicitDiscount: item.discount,
     });
@@ -43,7 +47,7 @@ export async function normalizeSalesItems(tx: any, items: any[] = [], context: {
     const total = net.plus(lineTax);
     subtotal = subtotal.plus(net);
     taxAmount = taxAmount.plus(lineTax);
-    normalized.push({ productId: product.id, description: item.description || product.description || product.name, quantity, unitPrice, taxRate, discount, total });
+    normalized.push({ productId: product.id, description: item.description || product.description || product.name, quantity, unitPrice, taxRate, discount, total, uomId: item.uomId, costRate: product.costPrice || 0, marginPercent: pricing.marginPercent, priceSource: pricing.source });
   }
 
   return { items: normalized, subtotal, taxAmount };

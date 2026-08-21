@@ -41,3 +41,14 @@ export async function markSalesOrderBilled(tx: Tx, salesOrderId: string, invoice
   }
   await refreshSalesOrderProgress(tx, salesOrderId);
 }
+
+export async function closeSalesOrderWhenSettled(tx: Tx, salesOrderId: string) {
+  const order = await tx.salesOrder.findUnique({ where: { id: salesOrderId }, include: { invoices: true } });
+  if (!order || ['DRAFT', 'CANCELLED', 'CLOSED'].includes(order.status)) return order;
+  const submitted = order.invoices.filter((invoice: any) => invoice.status === 'SUBMITTED');
+  const settled = submitted.length > 0 && submitted.every((invoice: any) => new D(invoice.outstandingAmount).lte(0));
+  if (settled && new D(order.deliveredPercent).gte(100) && new D(order.billedPercent).gte(100)) {
+    return tx.salesOrder.update({ where: { id: order.id }, data: { status: 'CLOSED', closedAt: new Date(), shortCloseReason: null } });
+  }
+  return order;
+}

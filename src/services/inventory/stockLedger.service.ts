@@ -79,17 +79,32 @@ export async function postStockLedger(tx: Tx, input: {
   remarks?: string;
   batchId?: string;
   serialNoId?: string;
+  reversalOfId?: string;
 }) {
   const warehouse = await defaultWarehouse(tx, input.warehouseId);
   const product = await tx.product.findUnique({ where: { id: input.productId } });
   if (!product || product.type !== 'PRODUCT' || product.maintainStock === false) return null;
+  if (warehouse.isFrozen && input.voucherType !== 'STOCK_RECONCILIATION') throw new Error(`${warehouse.name} is frozen for physical count`);
+
+  // Serialize every balance mutation for an item/warehouse pair. This prevents
+  // two concurrent issues from both reading the same available quantity.
+  await tx.$executeRawUnsafe('SELECT pg_advisory_xact_lock(hashtext($1))', `stock:${input.productId}:${warehouse.id}`);
 
   const actualQty = new D(input.actualQty || 0);
   if (actualQty.eq(0)) return null;
+  if (product.hasBatchNo && !input.batchId && actualQty.lt(0) && product.batchAllocationStrategy !== 'MANUAL') {
+    const batch = await tx.batch.findFirst({ where: { productId: product.id, warehouseId: warehouse.id, isActive: true, quantity: { gte: actualQty.abs() }, OR: [{ expiryDate: null }, { expiryDate: { gt: new Date() } }] }, orderBy: product.batchAllocationStrategy === 'FEFO' ? [{ expiryDate: 'asc' }, { createdAt: 'asc' }] : [{ createdAt: 'asc' }] });
+    if (batch) input.batchId = batch.id;
+  }
   if (product.hasBatchNo && !input.batchId) throw new Error(`Batch number is required for ${product.sku || product.name}`);
   if (product.hasSerialNo && !input.serialNoId) throw new Error(`Serial number is required for ${product.sku || product.name}`);
   if ((product.hasBatchNo || product.hasSerialNo) && actualQty.lt(0) && !input.batchId && !input.serialNoId) {
     throw new Error(`Serial/batch items cannot be issued without traceability for ${product.sku || product.name}`);
+  }
+  if (input.batchId && actualQty.lt(0)) {
+    const batch = await tx.batch.findUnique({ where: { id: input.batchId } });
+    if (!batch || batch.productId !== product.id || new D(batch.quantity).lt(actualQty.abs())) throw new Error(`Insufficient quantity in selected batch for ${product.sku || product.name}`);
+    if (batch.expiryDate && batch.expiryDate <= new Date()) throw new Error(`Expired batch cannot be issued for ${product.sku || product.name}`);
   }
   const before = await stockSnapshot(tx, input.productId, warehouse.id);
   const afterQty = before.quantity.plus(actualQty);
@@ -132,6 +147,7 @@ export async function postStockLedger(tx: Tx, input: {
       stockValueDifference: valueDiff,
       batchId: input.batchId,
       serialNoId: input.serialNoId,
+      reversalOfId: input.reversalOfId,
       remarks: input.remarks,
     },
   });
@@ -155,8 +171,8 @@ export async function postStockLedger(tx: Tx, input: {
 
   await tx.stockLevel.upsert({
     where: { productId_warehouseId: { productId: input.productId, warehouseId: warehouse.id } },
-    update: { quantity: Number(afterQty.toString()) },
-    create: { productId: input.productId, warehouseId: warehouse.id, quantity: Number(afterQty.toString()) },
+    update: { quantity: afterQty },
+    create: { productId: input.productId, warehouseId: warehouse.id, quantity: afterQty },
   });
   if (input.batchId) {
     await tx.batch.update({ where: { id: input.batchId }, data: { quantity: { increment: actualQty } } });
