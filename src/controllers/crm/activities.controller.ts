@@ -3,6 +3,7 @@ import prisma from '../../lib/prisma';
 import { success, paginated, error } from '../../utils/response';
 import { handlePrismaError } from '../../utils/prismaError';
 import { AuthRequest } from '../../middleware/auth';
+import { crmScopeWhere } from './scope';
 
 const activityInclude = {
   user: { select: { id: true, firstName: true, lastName: true, email: true } },
@@ -16,7 +17,7 @@ function toDate(value?: string | null) {
   return value ? new Date(value) : undefined;
 }
 
-function normalizeActivityPayload(body: any, userId?: string) {
+function normalizeActivityPayload(body: any, userId?: string, branchId?: string | null) {
   return {
     type: body.type,
     subject: String(body.subject || '').trim(),
@@ -25,11 +26,17 @@ function normalizeActivityPayload(body: any, userId?: string) {
     completedAt: toDate(body.completedAt),
     status: body.status || 'PLANNED',
     metadata: body.metadata,
+    outcome: body.outcome || undefined,
+    reminderAt: toDate(body.reminderAt),
+    recurrenceRule: body.recurrenceRule || undefined,
+    recurrenceEnd: toDate(body.recurrenceEnd),
+    parentActivityId: body.parentActivityId || undefined,
     organizationId: body.organizationId || undefined,
     leadId: body.leadId || undefined,
     contactId: body.contactId || undefined,
     opportunityId: body.opportunityId || undefined,
     userId: body.userId || userId,
+    branchId: body.branchId || branchId || undefined,
   };
 }
 
@@ -56,7 +63,7 @@ export const getActivities = async (req: Request, res: Response) => {
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 20;
     const { leadId, contactId, opportunityId, organizationId, type, status, fromDate, toDate: untilDate, q } = req.query as any;
-    const where: any = {};
+    const where: any = await crmScopeWhere(req as AuthRequest, 'ACTIVITY');
     if (leadId) where.leadId = leadId;
     if (contactId) where.contactId = contactId;
     if (opportunityId) where.opportunityId = opportunityId;
@@ -84,7 +91,7 @@ export const getActivities = async (req: Request, res: Response) => {
 
 export const createActivity = async (req: AuthRequest, res: Response) => {
   try {
-    const payload = normalizeActivityPayload(req.body, req.user!.id);
+    const payload = normalizeActivityPayload(req.body, req.user!.id, req.user?.branchId);
     const validationError = validateActivity(payload);
     if (validationError) return error(res, validationError, 400);
 
@@ -134,6 +141,8 @@ export const createLeadActivity = async (req: AuthRequest, res: Response) => {
 
 export const updateActivity = async (req: Request, res: Response) => {
   try {
+    const existing = await prisma.activity.findFirst({ where: { id: req.params.id, ...(await crmScopeWhere(req as AuthRequest, 'ACTIVITY')) }, select: { id: true } });
+    if (!existing) return error(res, 'Activity not found', 404);
     const data = normalizeActivityPayload(req.body);
     delete (data as any).userId;
     Object.keys(data).forEach((key) => data[key as keyof typeof data] === undefined && delete data[key as keyof typeof data]);
@@ -146,6 +155,8 @@ export const updateActivity = async (req: Request, res: Response) => {
 
 export const completeActivity = async (req: AuthRequest, res: Response) => {
   try {
+    const existing = await prisma.activity.findFirst({ where: { id: req.params.id, ...(await crmScopeWhere(req, 'ACTIVITY')) }, select: { id: true } });
+    if (!existing) return error(res, 'Activity not found', 404);
     const activity = await prisma.$transaction(async (tx) => {
       const completed = await tx.activity.update({
         where: { id: req.params.id },
@@ -173,6 +184,13 @@ export const completeActivity = async (req: AuthRequest, res: Response) => {
           },
         });
       }
+      if (completed.recurrenceRule && completed.dueDate && (!completed.recurrenceEnd || completed.dueDate < completed.recurrenceEnd)) {
+        const nextDue = new Date(completed.dueDate);
+        if (completed.recurrenceRule === 'DAILY') nextDue.setDate(nextDue.getDate() + 1);
+        else if (completed.recurrenceRule === 'WEEKLY') nextDue.setDate(nextDue.getDate() + 7);
+        else if (completed.recurrenceRule === 'MONTHLY') nextDue.setMonth(nextDue.getMonth() + 1);
+        if (!completed.recurrenceEnd || nextDue <= completed.recurrenceEnd) await tx.activity.create({ data: { companyId: completed.companyId, type: completed.type, subject: completed.subject, description: completed.description, dueDate: nextDue, status: 'PLANNED', metadata: completed.metadata, organizationId: completed.organizationId, leadId: completed.leadId, contactId: completed.contactId, opportunityId: completed.opportunityId, userId: completed.userId, recurrenceRule: completed.recurrenceRule, recurrenceEnd: completed.recurrenceEnd, parentActivityId: completed.parentActivityId || completed.id } });
+      }
       return completed;
     });
     return success(res, activity, 'Activity completed');
@@ -183,6 +201,8 @@ export const completeActivity = async (req: AuthRequest, res: Response) => {
 
 export const cancelActivity = async (req: Request, res: Response) => {
   try {
+    const existing = await prisma.activity.findFirst({ where: { id: req.params.id, ...(await crmScopeWhere(req as AuthRequest, 'ACTIVITY')) }, select: { id: true } });
+    if (!existing) return error(res, 'Activity not found', 404);
     const activity = await prisma.activity.update({
       where: { id: req.params.id },
       data: { status: 'CANCELLED', metadata: req.body.reason ? { cancelReason: req.body.reason } : undefined },
@@ -196,6 +216,8 @@ export const cancelActivity = async (req: Request, res: Response) => {
 
 export const deleteActivity = async (req: Request, res: Response) => {
   try {
+    const existing = await prisma.activity.findFirst({ where: { id: req.params.id, ...(await crmScopeWhere(req as AuthRequest, 'ACTIVITY')) }, select: { id: true } });
+    if (!existing) return error(res, 'Activity not found', 404);
     const activity = await prisma.activity.update({ where: { id: req.params.id }, data: { status: 'CANCELLED' } });
     return success(res, activity, 'Activity cancelled');
   } catch (err: any) {

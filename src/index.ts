@@ -35,6 +35,8 @@ import platformRoutes from './routes/platform.routes';
 import { idempotency, mutationAudit, requestContext } from './middleware/platform';
 import { runDueSubscriptionsJob } from './controllers/invoicingExtras.controller';
 import prisma from './lib/prisma';
+import { workOne } from './services/platform/job.service';
+import { processCrmReminders } from './services/crm/jobs';
 
 const app = express();
 
@@ -189,6 +191,11 @@ if (process.env.ENABLE_RECURRING_INVOICE_SCHEDULER === 'true') {
   setInterval(() => {
     runDueSubscriptionsJob().catch((err) => console.error('Recurring invoice scheduler failed', err));
   }, 60 * 60 * 1000);
+}
+
+if (process.env.ENABLE_BACKGROUND_WORKER !== 'false') {
+  setInterval(() => workOne().catch((err) => console.error('Background job worker failed', err)), 5_000);
+  setInterval(() => processCrmReminders().catch((err) => console.error('CRM reminder worker failed', err)), 60_000);
 }
 
 let shuttingDown = false;

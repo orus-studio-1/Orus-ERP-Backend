@@ -1798,6 +1798,8 @@ model Lead {
   lastName        String
   email           String?
   phone           String?
+  normalizedEmail String?
+  normalizedPhone String?
   company         String?
   city            String?
   country         String?
@@ -1810,6 +1812,12 @@ model Lead {
   score           Int              @default(0)
   tags            String[]         @default([])
   lostReason      String?
+  lostReasonId    String?
+  branchId        String?          @db.Uuid
+  territory       String?
+  productInterest String?
+  campaign        String?
+  mergedIntoId    String?
   notes           String?
   createdById     String
   createdBy       User             @relation("LeadCreatedBy", fields: [createdById], references: [id])
@@ -1834,6 +1842,9 @@ model Lead {
   @@index([organizationId])
   @@index([importBatchId])
   @@index([companyId])
+  @@index([companyId, normalizedEmail])
+  @@index([companyId, normalizedPhone])
+  @@index([branchId, assignedToId])
 }
 
 model CrmAssignmentRule {
@@ -1846,6 +1857,9 @@ model CrmAssignmentRule {
   source     LeadSource?
   city       String?
   country    String?
+  territory  String?
+  productId  String?
+  branchId   String?     @db.Uuid
   minValue   Float?
   maxValue   Float?
   assignToId String
@@ -1865,6 +1879,9 @@ enum LeadSource {
   PHONE
   ADVERTISEMENT
   CSV_IMPORT
+  INDIA_MART
+  FACEBOOK_LEAD_ADS
+  WHATSAPP
   OTHER
 }
 
@@ -1973,34 +1990,39 @@ model Contact {
 }
 
 model Opportunity {
-  id             String           @id @default(cuid())
-  companyId      String?
-  title          String
-  leadId         String?          @unique
-  lead           Lead?            @relation(fields: [leadId], references: [id])
-  contactId      String?
-  contact        Contact?         @relation(fields: [contactId], references: [id])
-  organizationId String?
-  organization   CrmOrganization? @relation(fields: [organizationId], references: [id])
-  customerId     String?
-  customer       Customer?        @relation(fields: [customerId], references: [id])
-  quotationId    String?
-  quotation      Quotation?       @relation("OpportunityQuotation", fields: [quotationId], references: [id])
-  salesOrderId   String?
-  salesOrder     SalesOrder?      @relation("OpportunitySalesOrder", fields: [salesOrderId], references: [id])
-  value          Float
-  currency       String           @default("USD")
-  stage          OpportunityStage @default(PROSPECTING)
-  probability    Int              @default(0)
-  expectedClose  DateTime?
-  lostReason     String?
-  erpSyncStatus  CrmSyncStatus    @default(NOT_SYNCED)
-  erpSyncError   String?
-  wonAt          DateTime?
-  lostAt         DateTime?
-  notes          String?
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
+  id               String           @id @default(cuid())
+  companyId        String?
+  branchId         String?          @db.Uuid
+  title            String
+  leadId           String?          @unique
+  lead             Lead?            @relation(fields: [leadId], references: [id])
+  contactId        String?
+  contact          Contact?         @relation(fields: [contactId], references: [id])
+  organizationId   String?
+  organization     CrmOrganization? @relation(fields: [organizationId], references: [id])
+  customerId       String?
+  customer         Customer?        @relation(fields: [customerId], references: [id])
+  quotationId      String?
+  quotation        Quotation?       @relation("OpportunityQuotation", fields: [quotationId], references: [id])
+  salesOrderId     String?
+  salesOrder       SalesOrder?      @relation("OpportunitySalesOrder", fields: [salesOrderId], references: [id])
+  value            Float
+  currency         String           @default("USD")
+  stage            OpportunityStage @default(PROSPECTING)
+  probability      Int              @default(0)
+  expectedClose    DateTime?
+  forecastCategory String           @default("PIPELINE")
+  competitor       String?
+  ownerId          String?
+  lostReasonId     String?
+  lostReason       String?
+  erpSyncStatus    CrmSyncStatus    @default(NOT_SYNCED)
+  erpSyncError     String?
+  wonAt            DateTime?
+  lostAt           DateTime?
+  notes            String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
 
   activities Activity[]
   items      OpportunityItem[]
@@ -2011,6 +2033,7 @@ model Opportunity {
   @@index([quotationId])
   @@index([salesOrderId])
   @@index([companyId])
+  @@index([branchId, ownerId])
 }
 
 enum OpportunityStage {
@@ -2050,33 +2073,42 @@ model OpportunityItem {
 }
 
 model Activity {
-  id             String           @id @default(cuid())
-  companyId      String?
-  type           ActivityType
-  subject        String
-  description    String?
-  dueDate        DateTime?
-  completedAt    DateTime?
-  status         ActivityStatus   @default(PLANNED)
-  metadata       Json?
-  organizationId String?
-  organization   CrmOrganization? @relation(fields: [organizationId], references: [id])
-  leadId         String?
-  lead           Lead?            @relation(fields: [leadId], references: [id])
-  contactId      String?
-  contact        Contact?         @relation(fields: [contactId], references: [id])
-  opportunityId  String?
-  opportunity    Opportunity?     @relation(fields: [opportunityId], references: [id])
-  userId         String
-  user           User             @relation(fields: [userId], references: [id])
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
+  id               String           @id @default(cuid())
+  companyId        String?
+  branchId         String?          @db.Uuid
+  type             ActivityType
+  subject          String
+  description      String?
+  dueDate          DateTime?
+  completedAt      DateTime?
+  status           ActivityStatus   @default(PLANNED)
+  metadata         Json?
+  outcome          String?
+  reminderAt       DateTime?
+  reminderSentAt   DateTime?
+  recurrenceRule   String?
+  recurrenceEnd    DateTime?
+  parentActivityId String?
+  organizationId   String?
+  organization     CrmOrganization? @relation(fields: [organizationId], references: [id])
+  leadId           String?
+  lead             Lead?            @relation(fields: [leadId], references: [id])
+  contactId        String?
+  contact          Contact?         @relation(fields: [contactId], references: [id])
+  opportunityId    String?
+  opportunity      Opportunity?     @relation(fields: [opportunityId], references: [id])
+  userId           String
+  user             User             @relation(fields: [userId], references: [id])
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
 
   @@index([leadId, createdAt])
   @@index([organizationId, createdAt])
   @@index([opportunityId, createdAt])
   @@index([userId, status, dueDate])
   @@index([companyId])
+  @@index([branchId, userId])
+  @@index([reminderAt, reminderSentAt])
 }
 
 enum ActivityType {
@@ -2115,6 +2147,200 @@ model CrmSavedView {
 
   @@unique([userId, entity, name])
   @@index([companyId, entity])
+}
+
+enum CrmScopeLevel {
+  OWN
+  TEAM
+  BRANCH
+  ALL
+}
+
+enum CrmCommunicationChannel {
+  EMAIL
+  WHATSAPP
+  SMS
+  SYSTEM
+}
+
+enum CrmCommunicationDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum CrmDeliveryStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+  RECEIVED
+}
+
+model CrmScopeRule {
+  id        String        @id @default(cuid())
+  companyId String
+  userId    String
+  entity    String        @default("LEAD")
+  scope     CrmScopeLevel @default(OWN)
+  branchId  String?       @db.Uuid
+  isActive  Boolean       @default(true)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  @@unique([companyId, userId, entity])
+  @@index([companyId, entity, isActive])
+}
+
+model CrmLostReason {
+  id        String   @id @default(cuid())
+  companyId String
+  name      String
+  category  String?
+  appliesTo String   @default("BOTH")
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(100)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([companyId, name, appliesTo])
+  @@index([companyId, isActive, sortOrder])
+}
+
+model CrmLeadEvent {
+  id         String   @id @default(cuid())
+  companyId  String?
+  leadId     String
+  type       String
+  actorId    String?
+  subject    String
+  data       Json?
+  occurredAt DateTime @default(now())
+
+  @@index([leadId, occurredAt])
+  @@index([companyId, type, occurredAt])
+}
+
+model OpportunityStageHistory {
+  id            String            @id @default(cuid())
+  companyId     String?
+  opportunityId String
+  fromStage     OpportunityStage?
+  toStage       OpportunityStage
+  probability   Int
+  changedById   String
+  reason        String?
+  changedAt     DateTime          @default(now())
+
+  @@index([opportunityId, changedAt])
+  @@index([companyId, toStage, changedAt])
+}
+
+model ActivityAttendee {
+  id         String   @id @default(cuid())
+  activityId String
+  userId     String?
+  name       String?
+  email      String?
+  response   String   @default("PENDING")
+  createdAt  DateTime @default(now())
+
+  @@unique([activityId, email])
+  @@index([activityId])
+}
+
+model CrmEmailTemplate {
+  id          String   @id @default(cuid())
+  companyId   String
+  name        String
+  subject     String
+  bodyHtml    String
+  bodyText    String?
+  isActive    Boolean  @default(true)
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([companyId, name])
+}
+
+model CrmCommunication {
+  id            String                    @id @default(cuid())
+  companyId     String
+  leadId        String?
+  contactId     String?
+  opportunityId String?
+  channel       CrmCommunicationChannel
+  direction     CrmCommunicationDirection
+  provider      String?
+  externalId    String?
+  threadId      String?
+  fromAddress   String?
+  toAddress     String
+  subject       String?
+  body          String?
+  status        CrmDeliveryStatus         @default(QUEUED)
+  error         String?
+  metadata      Json?
+  sentById      String?
+  sentAt        DateTime?
+  deliveredAt   DateTime?
+  readAt        DateTime?
+  createdAt     DateTime                  @default(now())
+  updatedAt     DateTime                  @updatedAt
+
+  @@unique([provider, externalId])
+  @@index([leadId, createdAt])
+  @@index([companyId, channel, status])
+  @@index([threadId, createdAt])
+}
+
+model CrmCaptureToken {
+  id          String     @id @default(cuid())
+  companyId   String
+  name        String
+  tokenHash   String     @unique
+  source      LeadSource
+  isActive    Boolean    @default(true)
+  expiresAt   DateTime?
+  lastUsedAt  DateTime?
+  createdById String
+  createdAt   DateTime   @default(now())
+
+  @@index([companyId, source, isActive])
+}
+
+model CrmIntegrationAccount {
+  id                   String    @id @default(cuid())
+  companyId            String
+  userId               String
+  provider             String
+  account              String
+  credentialsEncrypted String
+  syncCursor           String?
+  status               String    @default("ACTIVE")
+  lastSyncedAt         DateTime?
+  expiresAt            DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  @@unique([companyId, provider, account])
+  @@index([companyId, provider, status])
+}
+
+model CrmExportJob {
+  id            String    @id @default(cuid())
+  companyId     String
+  requestedById String
+  entity        String
+  filters       Json?
+  status        String    @default("PENDING")
+  storageKey    String?
+  error         String?
+  createdAt     DateTime  @default(now())
+  completedAt   DateTime?
+
+  @@index([companyId, status, createdAt])
 }
 
 // ===================== CUSTOMERS & SUPPLIERS =====================

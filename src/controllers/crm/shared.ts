@@ -27,12 +27,16 @@ export const opportunityInclude = {
 };
 
 export function normalizeEmail(email?: string | null) {
-  return String(email || '').trim().toLowerCase() || null;
+  return String(email || '').normalize('NFKC').trim().toLowerCase() || null;
 }
 
-export function normalizePhone(phone?: string | null) {
-  const cleaned = String(phone || '').replace(/[^\d+]/g, '').trim();
-  return cleaned || null;
+export function normalizePhone(phone?: string | null, country?: string | null) {
+  let digits = String(phone || '').replace(/\D/g, '');
+  if (digits.startsWith('00')) digits = digits.slice(2);
+  const code = String(country || '').trim().toUpperCase();
+  if ((code === 'IN' || code === 'IND' || code === 'INDIA') && digits.length === 10) digits = `91${digits}`;
+  if ((code === 'IN' || code === 'IND' || code === 'INDIA') && digits.length === 11 && digits.startsWith('0')) digits = `91${digits.slice(1)}`;
+  return digits ? `+${digits}` : null;
 }
 
 export function titleFromLead(row: any) {
@@ -85,7 +89,7 @@ export function normalizeLeadRow(raw: any) {
   const firstName = raw.firstname || raw.first || raw.name?.split(' ')?.[0] || '';
   const lastName = raw.lastname || raw.last || raw.name?.split(' ')?.slice(1).join(' ') || '';
   const email = normalizeEmail(raw.email);
-  const phone = normalizePhone(raw.phone || raw.mobile);
+  const phone = normalizePhone(raw.phone || raw.mobile, raw.country);
   return {
     title: raw.title || [firstName, lastName, raw.company].filter(Boolean).join(' - '),
     firstName,
@@ -113,10 +117,10 @@ export function validateLead(row: any) {
 
 export async function findDuplicateLead(tx: any, row: any) {
   const OR = [];
-  if (row.email) OR.push({ email: row.email });
-  if (row.phone) OR.push({ phone: row.phone });
+  if (row.email) OR.push({ normalizedEmail: normalizeEmail(row.email) });
+  if (row.phone) OR.push({ normalizedPhone: String(row.phone).replace(/\D/g, '') });
   if (!OR.length) return null;
-  return tx.lead.findFirst({ where: { OR }, select: { id: true, title: true, email: true, phone: true } });
+  return tx.lead.findFirst({ where: { OR, mergedIntoId: null, ...(row.companyId ? { companyId: row.companyId } : {}) }, select: { id: true, title: true, email: true, phone: true } });
 }
 
 export async function ensureOrganization(tx: any, row: any, companyId?: string | null, ownerId?: string | null) {
@@ -145,13 +149,18 @@ export async function resolveLeadAssignee(tx: any, row: any, companyId?: string 
     if (rule.source && rule.source !== row.source) return false;
     if (!normalizedMatch(row.city, rule.city)) return false;
     if (!normalizedMatch(row.country, rule.country)) return false;
+    if (!normalizedMatch(row.territory, rule.territory)) return false;
+    if (rule.branchId && rule.branchId !== row.branchId) return false;
+    if (rule.productId && rule.productId !== row.productId && rule.productId !== row.productInterest) return false;
     if (rule.minValue !== null && value !== null && value < Number(rule.minValue)) return false;
     if (rule.minValue !== null && value === null) return false;
     if (rule.maxValue !== null && value !== null && value > Number(rule.maxValue)) return false;
     if (rule.maxValue !== null && value === null) return false;
     return true;
   });
-  return match?.assignToId || fallbackUserId || null;
+  if (match?.assignToId) return match.assignToId;
+  const queue = companyId ? await tx.platformSetting.findFirst({ where: { companyId, namespace: 'crm', key: 'defaultQueueUserId' }, orderBy: { updatedAt: 'desc' } }) : null;
+  return (typeof queue?.value === 'string' ? queue.value : null) || fallbackUserId || null;
 }
 
 export async function logCrmActivity(tx: any, userId: string, data: any) {
