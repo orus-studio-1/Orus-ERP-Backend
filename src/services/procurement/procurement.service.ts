@@ -4,6 +4,7 @@ import { postStockLedger } from '../inventory/stockLedger.service';
 import { ensureLedgerAccount, postToLedger, reverseLedgerForVoucher } from '../accounting/ledger.service';
 import { currentCompanyId } from '../../utils/tenant';
 import { allocateDocumentNo } from '../../utils/generate';
+import { runThreeWayMatch } from './matching.service';
 
 const D = Prisma.Decimal;
 
@@ -174,9 +175,12 @@ export async function createPurchaseReceiptFromOrder(orderId: string, body: any 
 
 export async function submitPurchaseReceipt(receiptId: string) {
   return prisma.$transaction(async (tx: any) => {
-    const receipt = await tx.purchaseReceipt.findUnique({ where: { id: receiptId }, include: { items: true, purchaseOrder: { include: { items: true } } } });
+    const receipt = await tx.purchaseReceipt.findUnique({ where: { id: receiptId }, include: { items: { include: { product: true } }, qualityInspections: true, purchaseOrder: { include: { items: true } } } });
     if (!receipt) throw new Error('Purchase receipt not found');
     if (receipt.status !== 'DRAFT') throw new Error('Only draft purchase receipts can be submitted');
+    const settings = await tx.buyingSettings.findFirst({ where: { OR: [{ companyId: receipt.companyId }, { companyId: null }] }, orderBy: { companyId: 'desc' } });
+    const inspectionRequired = receipt.items.some((item: any) => item.product.receiptInspectionRequired);
+    if (settings?.requireInspectionForConfiguredItems && inspectionRequired && !receipt.inspectionCompleted) throw new Error('Incoming inspection must be completed before GRN submission');
     for (const item of receipt.items) {
       const accepted = new D(item.acceptedQty || item.receivedQty || 0).mul(item.conversionFactor || 1);
       if (accepted.gt(0)) {
@@ -192,8 +196,17 @@ export async function submitPurchaseReceipt(receiptId: string) {
           remarks: `Purchase receipt ${receipt.receiptNo}`,
         });
       }
+      const rejected = new D(item.rejectedQty || 0).mul(item.conversionFactor || 1);
+      if (rejected.gt(0)) {
+        if (!receipt.rejectedWarehouseId) throw new Error('Rejected warehouse is required for rejected quantities');
+        await postStockLedger(tx, {
+          productId: item.productId, warehouseId: receipt.rejectedWarehouseId, actualQty: rejected,
+          rate: new D(item.valuationRate || item.rate || 0), voucherType: 'PURCHASE_RECEIPT', voucherId: receipt.id,
+          voucherNo: receipt.receiptNo, postingDate: receipt.postingDate, remarks: `Rejected stock from ${receipt.receiptNo}`,
+        });
+      }
       if (item.purchaseOrderItemId) {
-        await tx.purchaseOrderItem.update({ where: { id: item.purchaseOrderItemId }, data: { receivedQty: { increment: Number(accepted.toString()) } } });
+        await tx.purchaseOrderItem.update({ where: { id: item.purchaseOrderItemId }, data: { receivedQty: { increment: accepted.plus(rejected) }, acceptedQty: { increment: accepted }, rejectedQty: { increment: rejected } } });
       }
     }
     await refreshPurchaseOrderProgress(tx, receipt.purchaseOrderId);
@@ -202,6 +215,15 @@ export async function submitPurchaseReceipt(receiptId: string) {
 }
 
 export async function submitPurchaseInvoice(invoiceId: string) {
+  const candidate = await prisma.purchaseInvoice.findUnique({ where: { id: invoiceId } });
+  if (!candidate) throw new Error('Purchase invoice not found');
+  const matchSettings = await prisma.buyingSettings.findFirst({ where: { OR: [{ companyId: candidate.companyId }, { companyId: null }] }, orderBy: { companyId: 'desc' } });
+  if (matchSettings?.requireThreeWayMatch && candidate.matchStatus !== 'APPROVED_EXCEPTION') {
+    const match = await runThreeWayMatch(invoiceId);
+    if (match.status !== 'MATCHED' && match.status !== 'APPROVED_EXCEPTION') {
+      throw new Error(`Invoice posting blocked by three-way match: ${JSON.stringify(match.explanation)}`);
+    }
+  }
   return prisma.$transaction(async (tx: any) => {
     const existing = await tx.purchaseInvoice.findUnique({ where: { id: invoiceId }, include: { items: true } });
     if (!existing) throw new Error('Purchase invoice not found');

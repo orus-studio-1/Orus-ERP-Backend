@@ -5,7 +5,12 @@ import { handlePrismaError } from '../utils/prismaError';
 import { generateSupplierNo } from '../utils/generate';
 import { pickDefined } from '../utils/payload';
 
-const supplierFields = ['name', 'email', 'phone', 'address', 'city', 'state', 'country', 'zip', 'taxId', 'currency', 'paymentTerms', 'bankAccount', 'bankName', 'notes', 'isActive'] as const;
+const supplierFields = [
+  'name', 'email', 'phone', 'address', 'city', 'state', 'country', 'zip', 'taxId', 'currency',
+  'paymentTerms', 'bankAccount', 'bankName', 'notes', 'isActive', 'panAvailable', 'pan', 'tdsSection',
+  'tdsRate', 'tdsThreshold', 'lowerDeductionRate', 'lowerDeductionValidUntil', 'msmeRegistered',
+  'msmeCategory', 'msmeRegistrationNo', 'reverseChargeApplicable', 'defaultItcEligibility', 'isImportSupplier',
+] as const;
 
 export const getSuppliers = async (req: Request, res: Response) => {
   try {

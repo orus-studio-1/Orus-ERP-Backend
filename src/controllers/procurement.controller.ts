@@ -58,6 +58,13 @@ export const updateBuyingSettings = async (req: Request, res: Response) => {
       overBillingAllowancePercent: Number(req.body.overBillingAllowancePercent || 0),
       autoCreateMaterialRequest: req.body.autoCreateMaterialRequest !== false,
       defaultCurrency: req.body.defaultCurrency || 'USD',
+      rateTolerancePercent: Number(req.body.rateTolerancePercent || 0),
+      quantityTolerancePercent: Number(req.body.quantityTolerancePercent || 0),
+      taxTolerancePercent: Number(req.body.taxTolerancePercent || 0),
+      requireThreeWayMatch: req.body.requireThreeWayMatch !== false,
+      requireGateEntry: req.body.requireGateEntry !== false,
+      requireInspectionForConfiguredItems: req.body.requireInspectionForConfiguredItems !== false,
+      msmePaymentDays: Number(req.body.msmePaymentDays || 45),
     };
     return success(res, await (prisma as any).buyingSettings.update({ where: { id: current.id }, data }), 'Buying settings updated');
   } catch (err: any) { return handlePrismaError(res, err); }
@@ -346,15 +353,38 @@ export const createPurchaseInvoice = async (req: Request, res: Response) => {
     if ((settings as any).requirePurchaseReceiptForInvoice && !req.body.purchaseReceiptId) return error(res, 'Purchase Receipt is required before Purchase Invoice', 400);
     const items = purchaseInvoiceItems(req.body.items);
     if (!req.body.supplierId || !items.length) return error(res, 'Supplier and at least one invoice item are required', 400);
+    const supplier = await prisma.supplier.findUnique({ where: { id: req.body.supplierId } });
+    if (!supplier) return error(res, 'Supplier not found', 404);
+    if (req.body.supplierInvoiceNo) {
+      const duplicate = await prisma.purchaseInvoice.findFirst({ where: { supplierId: supplier.id, supplierInvoiceNo: req.body.supplierInvoiceNo } });
+      if (duplicate) return error(res, 'This vendor invoice number already exists for the supplier', 409);
+    }
     const totals = documentTotals(items, req.body.discount, req.body.shippingAmount, req.body.exchangeRate || 1);
+    const invoiceDate = req.body.date ? new Date(req.body.date) : new Date();
+    const msmeDue = new Date(invoiceDate.getTime() + Number((settings as any).msmePaymentDays || 45) * 86400000);
+    const requestedDue = req.body.dueDate ? new Date(req.body.dueDate) : undefined;
+    const dueDate = supplier.msmeRegistered && (!requestedDue || requestedDue > msmeDue) ? msmeDue : requestedDue;
+    const lowerRateValid = supplier.lowerDeductionRate != null && (!supplier.lowerDeductionValidUntil || supplier.lowerDeductionValidUntil >= invoiceDate);
+    const tdsRate = lowerRateValid ? supplier.lowerDeductionRate! : supplier.panAvailable ? supplier.tdsRate || 0 : Math.max(Number(supplier.tdsRate || 0), 20);
+    const thresholdMet = !supplier.tdsThreshold || totals.baseTotal.gte(supplier.tdsThreshold);
+    const tdsAmount = thresholdMet ? totals.baseTotal.mul(tdsRate).div(100) : new D(0);
     const inv = await prisma.purchaseInvoice.create({ data: {
       invoiceNo: await generatePurchaseInvoiceNo(), supplierId: req.body.supplierId,
+      supplierInvoiceNo: req.body.supplierInvoiceNo || undefined,
       purchaseOrderId: req.body.purchaseOrderId || undefined, purchaseReceiptId: req.body.purchaseReceiptId || undefined,
-      date: req.body.date ? new Date(req.body.date) : new Date(), dueDate: req.body.dueDate ? new Date(req.body.dueDate) : undefined,
+      date: invoiceDate, dueDate,
       subtotal: Number(totals.subtotal), taxAmount: Number(totals.taxAmount), shippingAmount: Number(totals.shippingAmount),
       discount: Number(req.body.discount || 0), total: Number(totals.total), baseTotal: totals.baseTotal,
       outstandingAmount: totals.total, currency: req.body.currency || 'USD', exchangeRate: req.body.exchangeRate || 1,
       costCenterId: req.body.costCenterId || undefined, projectId: req.body.projectId || undefined,
+      tdsSection: supplier.tdsSection || undefined, tdsRate, tdsAmount,
+      reverseCharge: req.body.reverseCharge ?? supplier.reverseChargeApplicable,
+      itcEligibility: req.body.itcEligibility || supplier.defaultItcEligibility,
+      blockedItcReason: req.body.blockedItcReason || undefined,
+      importPurchase: req.body.importPurchase ?? supplier.isImportSupplier,
+      billOfEntryNo: req.body.billOfEntryNo || undefined,
+      billOfEntryDate: req.body.billOfEntryDate ? new Date(req.body.billOfEntryDate) : undefined,
+      customsDuty: req.body.customsDuty || 0, freightAmount: req.body.freightAmount || req.body.shippingAmount || 0,
       notes: req.body.notes || req.body.terms || undefined, items: { create: items },
     } as any, include: purchaseInvoiceInclude });
     return success(res, inv, 'Purchase invoice created', 201);
