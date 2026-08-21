@@ -15,6 +15,7 @@ import {
   validateLead,
 } from './shared';
 import { generateCustomerNo } from '../../utils/generate';
+import { crmScopeWhere } from './scope';
 
 async function ensureCustomerForLead(tx: any, lead: any, contact: any) {
   let customer = contact?.id ? await tx.customer.findFirst({ where: { contactId: contact.id } }) : null;
@@ -47,7 +48,7 @@ export const getLeads = async (req: Request, res: Response) => {
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 20;
     const { status, source, assignedToId, search, mine } = req.query as any;
-    const where: any = {};
+    const where: any = await crmScopeWhere(req as AuthRequest, 'LEAD');
     if (status) where.status = status;
     if (source) where.source = source;
     if (assignedToId) where.assignedToId = assignedToId;
@@ -82,8 +83,8 @@ export const getLeads = async (req: Request, res: Response) => {
 
 export const getLead = async (req: Request, res: Response) => {
   try {
-    const lead = await prisma.lead.findUnique({
-      where: { id: req.params.id },
+    const lead = await prisma.lead.findFirst({
+      where: { id: req.params.id, ...(await crmScopeWhere(req as AuthRequest, 'LEAD')) },
       include: {
         ...leadInclude,
       },
@@ -110,6 +111,10 @@ export const createLead = async (req: AuthRequest, res: Response) => {
         data: {
           ...req.body,
           ...normalized,
+          companyId: req.user?.companyId,
+          branchId: req.user?.branchId,
+          normalizedEmail: normalized.email,
+          normalizedPhone: normalized.phone?.replace(/\D/g, '') || null,
           title: titleFromLead({ ...req.body, ...normalized }),
           organizationId: organization?.id,
           createdById: req.user!.id,
@@ -136,10 +141,17 @@ export const updateLead = async (req: AuthRequest, res: Response) => {
   if (req.body.status === 'CONVERTED') return convertLead(req, res);
   try {
     const lead = await prisma.$transaction(async (tx) => {
-      const existing = await tx.lead.findUnique({ where: { id: req.params.id } });
+      const existing = await tx.lead.findFirst({ where: { id: req.params.id, ...(await crmScopeWhere(req, 'LEAD')) } });
       if (!existing) throw new Error('Lead not found');
       const organization = req.body.company ? await ensureOrganization(tx, req.body, req.user?.companyId, req.user?.id) : null;
       const data: any = { ...req.body };
+      if (req.body.email !== undefined || req.body.phone !== undefined) {
+        const normalized = normalizeLeadRow({ ...existing, ...req.body });
+        data.email = normalized.email;
+        data.phone = normalized.phone;
+        data.normalizedEmail = normalized.email;
+        data.normalizedPhone = normalized.phone?.replace(/\D/g, '') || null;
+      }
       if (organization) data.organizationId = organization.id;
       if (req.body.status === 'QUALIFIED' && existing.status !== 'QUALIFIED') data.qualifiedAt = new Date();
       if (req.body.status === 'CONTACTED' && existing.status !== 'CONTACTED') data.lastContactedAt = new Date();
@@ -164,7 +176,8 @@ export const updateLead = async (req: AuthRequest, res: Response) => {
 
 export const deleteLead = async (req: Request, res: Response) => {
   try {
-    await prisma.lead.delete({ where: { id: req.params.id } });
+    const deleted = await prisma.lead.deleteMany({ where: { id: req.params.id, ...(await crmScopeWhere(req as AuthRequest, 'LEAD')) } });
+    if (!deleted.count) return error(res, 'Lead not found', 404);
     return success(res, null, 'Lead deleted');
   } catch (err: any) {
     return handlePrismaError(res, err);
@@ -173,8 +186,9 @@ export const deleteLead = async (req: Request, res: Response) => {
 
 export const convertLead = async (req: AuthRequest, res: Response) => {
   try {
+    const body = req.body || {};
     const opportunity = await prisma.$transaction(async (tx) => {
-      const lead = await tx.lead.findUnique({ where: { id: req.params.id }, include: { contacts: true, opportunity: true } });
+      const lead = await tx.lead.findFirst({ where: { id: req.params.id, ...(await crmScopeWhere(req, 'LEAD')) }, include: { contacts: true, opportunity: true } });
       if (!lead) throw new Error('Lead not found');
       if (lead.status === 'CONVERTED') throw new Error('Lead is already converted');
       if (lead.opportunity) throw new Error('Lead already has an opportunity; use Qualify to complete its conversion');
@@ -193,17 +207,20 @@ export const convertLead = async (req: AuthRequest, res: Response) => {
       const customer = await ensureCustomerForLead(tx, lead, contact);
       const created = await tx.opportunity.create({
         data: {
-          title: req.body.title || `${lead.firstName} ${lead.lastName} - ${lead.company || 'Opportunity'}`,
+          companyId: req.user?.companyId,
+          branchId: req.user?.branchId,
+          ownerId: lead.assignedToId || req.user!.id,
+          title: body.title || `${lead.firstName} ${lead.lastName} - ${lead.company || 'Opportunity'}`,
           leadId: lead.id,
           contactId: contact.id,
           organizationId: lead.organizationId,
           customerId: customer.id,
-          value: Number(req.body.value ?? lead.value ?? 0),
-          currency: req.body.currency || 'USD',
+          value: Number(body.value ?? lead.value ?? 0),
+          currency: body.currency || 'USD',
           stage: 'QUALIFICATION',
-          probability: Number(req.body.probability ?? 25),
-          expectedClose: req.body.expectedClose ? new Date(req.body.expectedClose) : undefined,
-          notes: req.body.notes || lead.notes,
+          probability: Number(body.probability ?? 25),
+          expectedClose: body.expectedClose ? new Date(body.expectedClose) : undefined,
+          notes: body.notes || lead.notes,
         },
       });
       await tx.lead.update({ where: { id: lead.id }, data: { status: 'CONVERTED' } });
@@ -225,8 +242,9 @@ export const convertLead = async (req: AuthRequest, res: Response) => {
 
 export const qualifyLead = async (req: AuthRequest, res: Response) => {
   try {
+    const body = req.body || {};
     const opportunity = await prisma.$transaction(async (tx) => {
-      const lead = await tx.lead.findUnique({ where: { id: req.params.id }, include: { opportunity: true, contacts: true } });
+      const lead = await tx.lead.findFirst({ where: { id: req.params.id, ...(await crmScopeWhere(req, 'LEAD')) }, include: { opportunity: true, contacts: true } });
       if (!lead) throw new Error('Lead not found');
       if (lead.opportunity) return tx.opportunity.findUnique({ where: { id: lead.opportunity.id }, include: { contact: true, lead: true, organization: true } });
 
@@ -247,17 +265,20 @@ export const qualifyLead = async (req: AuthRequest, res: Response) => {
       const customer = await ensureCustomerForLead(tx, lead, contact);
       const created = await tx.opportunity.create({
         data: {
-          title: req.body.title || `${lead.firstName} ${lead.lastName} - ${lead.company || 'Opportunity'}`,
+          companyId: req.user?.companyId,
+          branchId: req.user?.branchId,
+          ownerId: lead.assignedToId || req.user!.id,
+          title: body.title || `${lead.firstName} ${lead.lastName} - ${lead.company || 'Opportunity'}`,
           leadId: lead.id,
           contactId: contact.id,
           organizationId: lead.organizationId,
           customerId: customer.id,
-          value: Number(req.body.value ?? lead.value ?? 0),
-          currency: req.body.currency || 'USD',
+          value: Number(body.value ?? lead.value ?? 0),
+          currency: body.currency || 'USD',
           stage: 'QUALIFICATION',
-          probability: Number(req.body.probability ?? 25),
-          expectedClose: req.body.expectedClose ? new Date(req.body.expectedClose) : undefined,
-          notes: req.body.notes || lead.notes,
+          probability: Number(body.probability ?? 25),
+          expectedClose: body.expectedClose ? new Date(body.expectedClose) : undefined,
+          notes: body.notes || lead.notes,
         },
       });
       await tx.lead.update({ where: { id: lead.id }, data: { status: 'CONVERTED', qualifiedAt: new Date() } });
@@ -281,11 +302,13 @@ export const qualifyLead = async (req: AuthRequest, res: Response) => {
 export const markLeadLost = async (req: AuthRequest, res: Response) => {
   try {
     const lead = await prisma.$transaction(async (tx) => {
-      const existing = await tx.lead.findUnique({ where: { id: req.params.id } });
+      const existing = await tx.lead.findFirst({ where: { id: req.params.id, ...(await crmScopeWhere(req, 'LEAD')) } });
       if (!existing) throw new Error('Lead not found');
+      const lossReason = await tx.crmLostReason.findFirst({ where: { id: req.body.lostReasonId, companyId: req.user?.companyId, isActive: true, appliesTo: { in: ['LEAD', 'BOTH'] } } });
+      if (!lossReason) throw new Error('A valid loss reason is required');
       const updated = await tx.lead.update({
         where: { id: existing.id },
-        data: { status: 'UNQUALIFIED', lostReason: req.body.lostReason || req.body.reason || 'Not qualified' },
+        data: { status: 'UNQUALIFIED', lostReasonId: lossReason.id, lostReason: lossReason.name },
         include: leadInclude,
       });
       await logCrmActivity(tx, req.user!.id, {
@@ -300,6 +323,7 @@ export const markLeadLost = async (req: AuthRequest, res: Response) => {
     return success(res, lead, 'Lead marked lost');
   } catch (err: any) {
     if (err.message === 'Lead not found') return error(res, err.message, 404);
+    if (err.message === 'A valid loss reason is required') return error(res, err.message, 422);
     return handlePrismaError(res, err);
   }
 };
@@ -355,6 +379,10 @@ export const importLeads = async (req: AuthRequest, res: Response) => {
         const lead = await tx.lead.create({
           data: {
             ...normalized,
+            companyId: req.user?.companyId,
+            branchId: req.user?.branchId,
+            normalizedEmail: normalized.email,
+            normalizedPhone: normalized.phone?.replace(/\D/g, '') || null,
             title: titleFromLead(normalized),
             organizationId: organization?.id,
             createdById: req.user!.id,

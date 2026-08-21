@@ -32,17 +32,23 @@ export async function reserveSalesOrderStock(tx: Tx, salesOrderId: string, wareh
   for (const item of order.items) {
     if (item.product?.type !== 'PRODUCT' || item.product?.maintainStock === false) continue;
     const qty = new D(item.quantity);
-    const available = await availableQty(tx, item.productId, warehouse.id);
-    if (available.lt(qty) && !item.product.allowNegativeStock) {
-      throw new Error(`Cannot reserve ${qty.toString()} ${item.product.sku}; available quantity is ${available.toString()}`);
+    if (item.supplyMode === 'MAKE_TO_ORDER') {
+      await tx.salesOrderItem.update({ where: { id: item.id }, data: { backorderQty: qty.minus(item.producedQty || 0) } });
+      continue;
     }
+    const available = await availableQty(tx, item.productId, warehouse.id);
+    const reservedQty = item.product.allowNegativeStock ? qty : Prisma.Decimal.min(qty, Prisma.Decimal.max(available, new D(0)));
+    const backorderQty = Prisma.Decimal.max(qty.minus(reservedQty), new D(0));
+    await tx.salesOrderItem.update({ where: { id: item.id }, data: { backorderQty } });
+    if (reservedQty.lte(0)) continue;
     await tx.stockReservation.create({
       data: {
         productId: item.productId,
         warehouseId: warehouse.id,
         salesOrderId,
         salesOrderItemId: item.id,
-        reservedQty: qty,
+        reservedQty,
+        expiresAt: order.deliveryDate || undefined,
       },
     });
     await setReservedQty(tx, item.productId, warehouse.id);
@@ -69,7 +75,7 @@ export async function fulfillSalesOrderReservation(tx: Tx, salesOrderId: string,
 
 export async function releaseSalesOrderReservations(tx: Tx, salesOrderId: string) {
   const reservations = await tx.stockReservation.findMany({ where: { salesOrderId, status: { in: ['ACTIVE', 'PARTIAL'] } } });
-  await tx.stockReservation.updateMany({ where: { salesOrderId, status: { in: ['ACTIVE', 'PARTIAL'] } }, data: { status: 'RELEASED' } });
+  await tx.stockReservation.updateMany({ where: { salesOrderId, status: { in: ['ACTIVE', 'PARTIAL'] } }, data: { status: 'RELEASED', releasedAt: new Date(), releaseReason: 'Sales order release' } });
   for (const reservation of reservations) {
     await setReservedQty(tx, reservation.productId, reservation.warehouseId);
   }

@@ -5,6 +5,7 @@ import { success, paginated, error } from '../../utils/response';
 import { handlePrismaError } from '../../utils/prismaError';
 import { audit, recalculateInvoiceAllocations } from '../../utils/erp';
 import { nextDocumentNo, postPaymentEntryLedger, serializePaymentEntry } from './shared';
+import { closeSalesOrderWhenSettled } from '../../services/sales/salesOrder.service';
 
 export const getPaymentEntries = async (req: Request, res: Response) => {
   try {
@@ -120,7 +121,11 @@ export const updatePaymentEntryStatus = async (req: Request, res: Response) => {
         const submitted = await tx.paymentEntry.update({ where: { id: existing.id }, data: { status: 'SUBMITTED', submittedAt: new Date() }, include: { allocations: true, customer: true } });
         await postPaymentEntryLedger(tx, submitted);
         for (const allocation of submitted.allocations) {
-          if (allocation.invoiceId) await recalculateInvoiceAllocations(tx, allocation.invoiceId);
+          if (allocation.invoiceId) {
+            await recalculateInvoiceAllocations(tx, allocation.invoiceId);
+            const invoice = await tx.salesInvoice.findUnique({ where: { id: allocation.invoiceId }, select: { salesOrderId: true } });
+            if (invoice?.salesOrderId) await closeSalesOrderWhenSettled(tx, invoice.salesOrderId);
+          }
         }
         await audit(tx, req, { entityType: 'PAYMENT_ENTRY', entityId: submitted.id, action: 'SUBMIT', statusBefore: existing.status, statusAfter: 'SUBMITTED', message: `Submitted ${submitted.paymentNo}` });
         return tx.paymentEntry.findUnique({ where: { id: submitted.id }, include: { customer: true, allocations: { include: { invoice: true, creditNote: true } }, ledgerEntries: true } });

@@ -6,3 +6,4 @@ export * from './crm/organizations.controller';
 export * from './crm/dashboard.controller';
 export * from './crm/savedViews.controller';
 export * from './crm/assignmentRules.controller';
+export * from './crm/completion.controller';

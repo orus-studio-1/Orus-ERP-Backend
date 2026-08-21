@@ -7,6 +7,7 @@ import { generateOrderNo } from '../../utils/generate';
 import { normalizeSalesItems } from './shared';
 import { releaseSalesOrderReservations, reserveSalesOrderStock } from '../../services/inventory/reservation.service';
 import { refreshSalesOrderProgress } from '../../services/sales/salesOrder.service';
+import { determineSalesTax } from '../../services/sales/tax.service';
 
 export const getSalesOrders = async (req: Request, res: Response) => {
   try {
@@ -54,12 +55,16 @@ export const createSalesOrder = async (req: Request, res: Response) => {
     if (!items.length) return error(res, 'At least one sales order item is required', 400);
 
     const order = await prisma.$transaction(async (tx) => {
-      const orderNo = await generateOrderNo();
+      const orderNo = `DRAFT-SO-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
       if (customerPoNo) {
         const duplicatePo = await tx.salesOrder.findFirst({ where: { customerId, customerPoNo, status: { not: 'CANCELLED' } } });
         if (duplicatePo) throw new Error(`Customer PO ${customerPoNo} is already used on ${duplicatePo.orderNo}`);
       }
-      const calculated = await normalizeSalesItems(tx, items, { customerId, currency: currency || 'USD', priceListId: req.body.priceListId });
+      const customer = await tx.customer.findUnique({ where: { id: customerId } });
+      if (!customer) throw new Error('Customer not found');
+      const supplier = req.body.branchId ? await tx.branch.findUnique({ where: { id: req.body.branchId } }) : customer.companyId ? await tx.company.findUnique({ where: { id: customer.companyId } }) : null;
+      const tax = determineSalesTax({ supplierGstin: supplier?.gstin, customerGstin: customer.taxId, customerCountry: customer.country, isSez: Boolean(req.body.isSez), isExport: Boolean(req.body.isExport) });
+      const calculated = await normalizeSalesItems(tx, items, { customerId, currency: currency || customer.currency, priceListId: req.body.priceListId, customerGroup: customer.customerGroup || undefined, territory: req.body.territory || customer.territory || undefined, salesChannel: req.body.salesChannel || customer.salesChannel || undefined });
       const discountAmount = new Prisma.Decimal(discount || 0);
       const total = calculated.subtotal.plus(calculated.taxAmount).minus(discountAmount);
       return tx.salesOrder.create({
@@ -74,10 +79,20 @@ export const createSalesOrder = async (req: Request, res: Response) => {
           taxAmount: calculated.taxAmount,
           total,
           discount: discountAmount,
-          currency: currency || 'USD',
+          currency: currency || customer.currency,
           notes,
           terms,
-          items: { create: calculated.items.map((item: any) => ({ ...item, sourceWarehouseId })) },
+          branchId: req.body.branchId,
+          territory: req.body.territory || customer.territory,
+          salesChannel: req.body.salesChannel || customer.salesChannel,
+          billingAddressSnapshot: req.body.billingAddress || { address: customer.address, city: customer.city, state: customer.state, country: customer.country, zip: customer.zip, taxId: customer.taxId },
+          shippingAddressSnapshot: req.body.shippingAddress || { address: customer.address, city: customer.city, state: customer.state, country: customer.country, zip: customer.zip, taxId: customer.taxId },
+          placeOfSupply: req.body.placeOfSupply || tax.placeOfSupply || customer.state,
+          taxMode: req.body.taxMode || tax.taxMode,
+          deliveryTerms: req.body.deliveryTerms,
+          transporterInfo: req.body.transporterInfo,
+          eWayBillNo: req.body.eWayBillNo,
+          items: { create: calculated.items.map((item: any, index: number) => ({ ...item, sourceWarehouseId, supplyMode: items[index]?.supplyMode || 'MAKE_TO_STOCK', backorderQty: 0 })) },
         },
         include: { customer: true, items: { include: { product: true } } },
       });

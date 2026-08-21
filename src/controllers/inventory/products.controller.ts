@@ -4,7 +4,7 @@ import { success, paginated, error } from '../../utils/response';
 import { handlePrismaError } from '../../utils/prismaError';
 import { pickDefined } from '../../utils/payload';
 
-const productFields = ['sku', 'name', 'description', 'categoryId', 'unitId', 'type', 'costPrice', 'salePrice', 'taxRate', 'minStockLevel', 'maxStockLevel', 'valuationMethod', 'maintainStock', 'allowNegativeStock', 'hasBatchNo', 'hasSerialNo', 'reorderLevel', 'reorderQty', 'brand', 'manufacturer', 'isActive', 'image', 'barcode', 'weight', 'hsnCode', 'taxCode', 'defaultTaxTemplateId', 'defaultWarehouseId', 'isVariant', 'variantOfId'] as const;
+const productFields = ['sku', 'name', 'description', 'categoryId', 'unitId', 'type', 'costPrice', 'salePrice', 'taxRate', 'minStockLevel', 'maxStockLevel', 'valuationMethod', 'maintainStock', 'allowNegativeStock', 'hasBatchNo', 'hasSerialNo', 'reorderLevel', 'reorderQty', 'brand', 'manufacturer', 'isActive', 'image', 'barcode', 'weight', 'hsnCode', 'taxCode', 'defaultTaxTemplateId', 'defaultWarehouseId', 'isVariant', 'variantOfId', 'itemNature', 'shelfLifeDays', 'receiptInspectionRequired', 'inProcessInspectionRequired', 'finalInspectionRequired', 'safetyStock', 'leadTimeDays', 'minimumOrderQty', 'orderMultiple', 'backflush', 'drawingReference', 'revisionReference', 'batchAllocationStrategy', 'inventoryAccountId', 'cogsAccountId', 'stockAdjustmentAccountId'] as const;
 
 export const getProducts = async (req: Request, res: Response) => {
   try {
@@ -40,7 +40,7 @@ export const getProduct = async (req: Request, res: Response) => {
   try {
     const product = await prisma.product.findUnique({
       where: { id: req.params.id },
-      include: { category: true, unit: true, stockLevels: { include: { warehouse: true } } },
+      include: { category: true, unit: true, stockLevels: { include: { warehouse: true } }, uomConversions: true, warehouseRules: { include: { warehouse: true } }, customerCodes: true, supplierItems: true },
     });
     if (!product) return error(res, 'Product not found', 404);
     return success(res, product);

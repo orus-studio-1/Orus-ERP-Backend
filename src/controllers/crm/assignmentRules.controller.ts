@@ -47,6 +47,9 @@ function buildRuleData(req: AuthRequest) {
       source: source as any,
       city: cleanText(req.body.city),
       country: cleanText(req.body.country),
+      territory: cleanText(req.body.territory),
+      productId: cleanText(req.body.productId),
+      branchId: cleanText(req.body.branchId),
       minValue,
       maxValue,
       assignToId: cleanText(req.body.assignToId)!,
@@ -70,6 +73,9 @@ function leadWhereForRule(rule: any, companyId?: string | null) {
   if (rule.source) where.source = rule.source;
   if (rule.city) where.city = { equals: rule.city, mode: 'insensitive' };
   if (rule.country) where.country = { equals: rule.country, mode: 'insensitive' };
+  if (rule.territory) where.territory = { equals: rule.territory, mode: 'insensitive' };
+  if (rule.branchId) where.branchId = rule.branchId;
+  if (rule.productId) where.productInterest = rule.productId;
   if (rule.minValue !== null || rule.maxValue !== null) {
     where.value = {};
     if (rule.minValue !== null) where.value.gte = rule.minValue;
@@ -98,6 +104,9 @@ function matchesRule(rule: any, sample: any) {
   if (rule.source && rule.source !== sample.source) return false;
   if (!normalizedMatch(sample.city, rule.city)) return false;
   if (!normalizedMatch(sample.country, rule.country)) return false;
+  if (!normalizedMatch(sample.territory, rule.territory)) return false;
+  if (rule.branchId && rule.branchId !== sample.branchId) return false;
+  if (rule.productId && rule.productId !== sample.productId && rule.productId !== sample.productInterest) return false;
   if (rule.minValue !== null && (value === null || value < Number(rule.minValue))) return false;
   if (rule.maxValue !== null && (value === null || value > Number(rule.maxValue))) return false;
   return true;
@@ -187,6 +196,9 @@ export const testAssignmentRule = async (req: AuthRequest, res: Response) => {
       source,
       city: cleanText(req.body.city),
       country: cleanText(req.body.country),
+      territory: cleanText(req.body.territory),
+      branchId: cleanText(req.body.branchId),
+      productId: cleanText(req.body.productId),
       value,
     };
     const matchedRule = rules.find((rule) => matchesRule(rule, sample)) || null;

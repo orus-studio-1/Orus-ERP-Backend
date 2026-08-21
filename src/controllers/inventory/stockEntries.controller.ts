@@ -96,7 +96,7 @@ async function postStockEntry(tx: any, entry: any, reverse = false) {
     }
     const targetWarehouse = item.warehouseId || entry.toWarehouseId || entry.fromWarehouseId;
     if (!targetWarehouse) throw new Error('Warehouse is required for stock entry item');
-    const outgoing = entry.purpose === 'MATERIAL_ISSUE';
+    const outgoing = ['MATERIAL_ISSUE', 'SCRAP', 'SUPPLIER_RETURN', 'JOB_WORK_ISSUE'].includes(entry.purpose);
     await postStockLedger(tx, {
       productId: item.productId,
       warehouseId: targetWarehouse,
@@ -128,6 +128,7 @@ async function reverseStockEntry(tx: any, entry: any) {
       remarks: `Reversal of ${entry.entryNo}`,
       batchId: row.batchId,
       serialNoId: row.serialNoId,
+      reversalOfId: row.id,
     });
     await tx.stockLedgerEntry.update({ where: { id: row.id }, data: { isCancelled: true } });
   }
@@ -208,4 +209,16 @@ export const updateStockEntryStatus = async (req: Request, res: Response) => {
     if (err.message) return error(res, err.message, err.message.includes('not found') ? 404 : 400);
     return handlePrismaError(res, err);
   }
+};
+
+export const amendStockEntry = async (req: Request, res: Response) => {
+  try {
+    const amended = await prisma.$transaction(async tx => {
+      const source = await tx.stockEntry.findUnique({ where: { id: req.params.id }, include: { items: true } });
+      if (!source) throw new Error('Stock entry not found');
+      if (source.status !== 'CANCELLED') throw new Error('Only cancelled stock entries can be amended');
+      return tx.stockEntry.create({ data: { entryNo: await nextStockEntryNo(tx), companyId: source.companyId, purpose: source.purpose, postingDate: new Date(), fromWarehouseId: source.fromWarehouseId, toWarehouseId: source.toWarehouseId, remarks: source.remarks, amendedFromId: source.id, revisionNo: source.revisionNo + 1, sourceDocumentType: source.sourceDocumentType, sourceDocumentId: source.sourceDocumentId, items: { create: source.items.map(item => ({ productId: item.productId, warehouseId: item.warehouseId, quantity: item.quantity, valuationRate: item.valuationRate, batchId: item.batchId, serialNoId: item.serialNoId, remarks: item.remarks })) } }, include });
+    });
+    return success(res, amended, 'Stock entry amendment created', 201);
+  } catch (err: any) { return error(res, err.message || 'Could not amend stock entry', err.message?.includes('not found') ? 404 : 400); }
 };
