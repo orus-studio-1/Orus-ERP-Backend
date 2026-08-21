@@ -27,11 +27,36 @@ async function verifyPassword(hash: string, password: string) {
 async function hashPassword(password: string) {
   return argon2.hash(password, { type: argon2.argon2id, memoryCost: 19456, timeCost: 2, parallelism: 1 });
 }
-async function contextFor(userId: string, companyId?: string) {
-  const membership = await prisma.companyMembership.findFirst({ where: { userId, isActive: true, ...(companyId ? { companyId } : {}) } });
-  if (membership) return { tenantId: membership.tenantId, companyId: membership.companyId, branchId: membership.defaultBranchId };
-  const user = await prisma.user.findUnique({ where: { id: userId }, select: { companyId: true, company: { select: { tenantId: true } } } });
-  return { tenantId: user?.company?.tenantId || null, companyId: user?.companyId || null, branchId: null };
+async function contextFor(userId: string, companyIdOrSlug?: string) {
+  let targetCompanyId = companyIdOrSlug;
+  if (companyIdOrSlug) {
+    const slugMatch = await prisma.company.findFirst({
+      where: { OR: [{ id: companyIdOrSlug }, { slug: companyIdOrSlug.toLowerCase() }] },
+      select: { id: true },
+    });
+    if (slugMatch) targetCompanyId = slugMatch.id;
+  }
+
+  if (targetCompanyId) {
+    const membership = await prisma.companyMembership.findFirst({
+      where: { userId, isActive: true, companyId: targetCompanyId },
+    });
+    if (membership) return { tenantId: membership.tenantId, companyId: membership.companyId, branchId: membership.defaultBranchId };
+  }
+
+  const firstMembership = await prisma.companyMembership.findFirst({
+    where: { userId, isActive: true },
+  });
+  if (firstMembership) return { tenantId: firstMembership.tenantId, companyId: firstMembership.companyId, branchId: firstMembership.defaultBranchId };
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { companyId: true, company: { select: { tenantId: true } } },
+  });
+  if (user?.companyId) {
+    return { tenantId: user.company?.tenantId || null, companyId: user.companyId, branchId: null };
+  }
+  return { tenantId: null, companyId: null, branchId: null };
 }
 async function makeAccessToken(user: any, context: any, twoFactorVerified = false) {
   const company = context.companyId ? await prisma.company.findUnique({ where: { id: context.companyId }, select: { slug: true } }) : null;
@@ -41,7 +66,29 @@ async function makePayload(user: any, context: any, twoFactorVerified = false) {
   const token = await makeAccessToken(user, context, twoFactorVerified);
   const access = await computeEffectiveAccess(user.id);
   const { password, twoFactorSecret, ...safe } = user;
-  return { user: { ...safe, access }, accessToken: token, token, expiresIn: 900, activeContext: context };
+
+  const memberships = await prisma.companyMembership.findMany({
+    where: { userId: user.id, isActive: true },
+    include: { company: { select: { id: true, name: true, slug: true, logo: true, currency: true } } },
+  });
+  const accessibleCompanies = memberships.map((m) => m.company).filter(Boolean);
+
+  const activeCompany = context.companyId
+    ? accessibleCompanies.find((c) => c.id === context.companyId) ||
+      (await prisma.company.findUnique({ where: { id: context.companyId }, select: { id: true, name: true, slug: true, logo: true, currency: true } }))
+    : null;
+
+  return {
+    user: { ...safe, access, company: activeCompany || safe.company, accessibleCompanies },
+    accessToken: token,
+    token,
+    expiresIn: 900,
+    activeContext: {
+      ...context,
+      companySlug: activeCompany?.slug || null,
+      accessibleCompanies,
+    },
+  };
 }
 async function makeRefresh(req: Request, userId: string, context: any, familyId = crypto.randomUUID(), parentHash?: string) {
   const raw = randomToken();
@@ -85,7 +132,10 @@ export const login = async (req: Request, res: Response) => {
     const email = String(req.body.email || '').trim().toLowerCase();
     const ip = ipOf(req);
     if (await prisma.loginAttempt.count({ where: { ip, success: false, createdAt: { gte: new Date(Date.now() - 15 * 60000) } } }) >= 25) return error(res, 'Too many failed attempts', 429, undefined, 'AUTH_LOCKED');
-    const user = await prisma.user.findFirst({ where: { email: { equals: email, mode: 'insensitive' } } });
+    const user = await prisma.user.findFirst({
+      where: { email: { equals: email, mode: 'insensitive' } },
+      include: { company: true },
+    });
     const valid = user && user.isActive && (!user.lockedUntil || user.lockedUntil <= new Date()) && await verifyPassword(user.password, String(req.body.password || ''));
     await prisma.loginAttempt.create({ data: { email, ip, success: Boolean(valid) } });
     if (!user || !valid) {
@@ -94,8 +144,16 @@ export const login = async (req: Request, res: Response) => {
     }
     await prisma.user.update({ where: { id: user.id }, data: { failedLoginCount: 0, lockedUntil: null, ...(!user.password.startsWith('$argon2') ? { password: await hashPassword(req.body.password), passwordChangedAt: new Date() } : {}) } });
     if (user.twoFactorEnabled) return success(res, { requiresTwoFactor: true, challenge: jwt.sign({ sub: user.id, purpose: '2fa-login' }, process.env.JWT_SECRET!, { expiresIn: '5m' }) }, 'Two-factor verification required');
-    const context = await contextFor(user.id, req.body.companyId);
-    if (!context.companyId) return error(res, 'No active company membership', 403, undefined, 'COMPANY_REQUIRED');
+
+    const requestedSlug = String(req.headers['x-tenant-slug'] || req.body.slug || req.body.companySlug || '').trim();
+    const targetIdentifier = req.body.companyId || requestedSlug || undefined;
+    const context = await contextFor(user.id, targetIdentifier);
+
+    if (!context.companyId) return error(res, 'No active company membership found for your account', 403, undefined, 'COMPANY_REQUIRED');
+    if (context.companyId) {
+      await ensureCompanyDefaultRoles(context.companyId).catch(() => null);
+    }
+
     setRefresh(res, await makeRefresh(req, user.id, context));
     return success(res, await makePayload(user, context), 'Login successful');
   } catch (e: any) { return handlePrismaError(res, e); }

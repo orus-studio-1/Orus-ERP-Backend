@@ -109,8 +109,8 @@ model TenantMembership {
 
 model Company {
   id              String   @id @default(cuid())
-  tenantId        String   @db.Uuid
-  tenant          Tenant   @relation(fields: [tenantId], references: [id])
+  tenantId        String?  @db.Uuid
+  tenant          Tenant?  @relation(fields: [tenantId], references: [id])
   legalName       String?
   gstin           String?
   pan             String?
@@ -159,7 +159,7 @@ model Company {
 
 model CompanyMembership {
   id              String   @id @default(uuid(7)) @db.Uuid
-  tenantId        String   @db.Uuid
+  tenantId        String?  @db.Uuid
   companyId       String
   company         Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
   userId          String
@@ -174,7 +174,7 @@ model CompanyMembership {
 
 model Branch {
   id              String   @id @default(uuid(7)) @db.Uuid
-  tenantId        String   @db.Uuid
+  tenantId        String?  @db.Uuid
   companyId       String
   company         Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
   code            String
@@ -192,7 +192,7 @@ model Branch {
 
 model CompanyGstin {
   id        String   @id @default(uuid(7)) @db.Uuid
-  tenantId  String   @db.Uuid
+  tenantId  String?  @db.Uuid
   companyId String
   company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
   stateCode String
@@ -3941,8 +3941,8 @@ model BackgroundJob {
 
 model PlatformSetting {
   id        String   @id @default(uuid(7)) @db.Uuid
-  tenantId  String   @db.Uuid
-  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenantId  String?  @db.Uuid
+  tenant    Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   companyId String?
   branchId  String?  @db.Uuid
   userId    String?
@@ -3961,7 +3961,7 @@ model PlatformSetting {
 
 model ApiKey {
   id         String    @id @default(uuid(7)) @db.Uuid
-  tenantId   String    @db.Uuid
+  tenantId   String?   @db.Uuid
   name       String
   prefix     String
   secretHash String    @unique
@@ -3977,7 +3977,7 @@ model ApiKey {
 
 model WebhookSubscription {
   id         String            @id @default(uuid(7)) @db.Uuid
-  tenantId   String            @db.Uuid
+  tenantId   String?           @db.Uuid
   url        String
   events     String[]
   secretHash String
@@ -3991,19 +3991,19 @@ model WebhookSubscription {
 }
 
 model WebhookDelivery {
-  id             String              @id @default(uuid(7)) @db.Uuid
-  tenantId       String              @db.Uuid
-  subscriptionId String              @db.Uuid
-  subscription   WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  id             String               @id @default(uuid(7)) @db.Uuid
+  tenantId       String?              @db.Uuid
+  subscriptionId String               @db.Uuid
+  subscription   WebhookSubscription  @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
   event          String
   payload        Json
-  status         String              @default("PENDING")
-  attempts       Int                 @default(0)
+  status         String               @default("PENDING")
+  attempts       Int                  @default(0)
   responseStatus Int?
   responseBody   String?
-  nextAttemptAt  DateTime            @default(now())
+  nextAttemptAt  DateTime             @default(now())
   deliveredAt    DateTime?
-  createdAt      DateTime            @default(now())
+  createdAt      DateTime             @default(now())
 
   @@index([tenantId, status, nextAttemptAt])
 }
