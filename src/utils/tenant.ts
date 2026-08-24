@@ -94,7 +94,7 @@ for (const model of Prisma.dmmf.datamodel.models) {
 export const tenantIdModels = new Set(Prisma.dmmf.datamodel.models.filter((model) => model.fields.some((field) => field.name === 'tenantId')).map((model) => model.name.toLowerCase()));
 const normalizedTenantModels = new Set(Array.from(tenantModels).map((model) => model.toLowerCase()));
 
-const readOperations = new Set(['findMany', 'findFirst', 'findUnique', 'count', 'aggregate', 'groupBy']);
+const readOperations = new Set(['findMany', 'findFirst', 'count', 'aggregate', 'groupBy']);
 
 export function runWithTenant<T>(context: TenantContext | string | null | undefined, callback: () => T) {
   let store: TenantContext;

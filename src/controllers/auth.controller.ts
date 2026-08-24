@@ -60,7 +60,8 @@ async function contextFor(userId: string, companyIdOrSlug?: string) {
 }
 async function makeAccessToken(user: any, context: any, twoFactorVerified = false) {
   const company = context.companyId ? await prisma.company.findUnique({ where: { id: context.companyId }, select: { slug: true } }) : null;
-  return jwt.sign({ sub: user.id, id: user.id, email: user.email, tenantId: context.tenantId, companyId: context.companyId, companySlug: company?.slug || null, branchId: context.branchId, tokenVersion: user.tokenVersion, twoFactorVerified }, process.env.JWT_SECRET!, { expiresIn: (process.env.JWT_ACCESS_TTL || '15m') as any });
+  const ttl = process.env.JWT_ACCESS_TTL || process.env.JWT_EXPIRES_IN || '30d';
+  return jwt.sign({ sub: user.id, id: user.id, email: user.email, tenantId: context.tenantId, companyId: context.companyId, companySlug: company?.slug || null, branchId: context.branchId, tokenVersion: user.tokenVersion, twoFactorVerified }, process.env.JWT_SECRET!, { expiresIn: ttl as any });
 }
 async function makePayload(user: any, context: any, twoFactorVerified = false) {
   const token = await makeAccessToken(user, context, twoFactorVerified);
@@ -82,7 +83,7 @@ async function makePayload(user: any, context: any, twoFactorVerified = false) {
     user: { ...safe, access, company: activeCompany || safe.company, accessibleCompanies },
     accessToken: token,
     token,
-    expiresIn: 900,
+    expiresIn: 2592000,
     activeContext: {
       ...context,
       companySlug: activeCompany?.slug || null,
@@ -260,7 +261,7 @@ export const refresh = async (req: Request, res: Response) => {
   const authHeader = req.headers.authorization?.split(' ')[1];
   if (authHeader) {
     try {
-      const decoded: any = jwt.verify(authHeader, process.env.JWT_SECRET!);
+      const decoded: any = jwt.verify(authHeader, process.env.JWT_SECRET!, { ignoreExpiration: true });
       const user = await prisma.user.findUnique({ where: { id: decoded.id || decoded.sub }, include: { company: true } });
       if (!user || !user.isActive) return error(res, 'User not found or inactive', 401, undefined, 'USER_INACTIVE');
       if (decoded.tokenVersion !== undefined && user.tokenVersion !== undefined && decoded.tokenVersion !== user.tokenVersion) {

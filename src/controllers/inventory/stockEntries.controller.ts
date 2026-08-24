@@ -12,22 +12,92 @@ const include = {
 };
 
 async function nextStockEntryNo(tx: any) {
-  let series = await tx.numberingSeries.findFirst({ where: { documentType: 'STOCK_ENTRY', isActive: true, isDefault: true } });
+  let series = await tx.numberingSeries.findFirst({
+    where: { documentType: 'STOCK_ENTRY', isActive: true, isDefault: true },
+    orderBy: { createdAt: 'asc' },
+  });
   if (!series) {
     series = await tx.numberingSeries.create({
-      data: { documentType: 'STOCK_ENTRY', name: 'STE-DEFAULT', pattern: `STE-${new Date().getFullYear()}-#####`, prefix: 'STE', digits: 5, isDefault: true },
+      data: {
+        documentType: 'STOCK_ENTRY',
+        name: 'STE-DEFAULT',
+        pattern: `STE-${new Date().getFullYear()}-#####`,
+        prefix: 'STE',
+        digits: 5,
+        isDefault: true,
+      },
     });
   }
+
+  const currentYear = new Date().getFullYear();
+  let maxSeq = Number(series.current) || 0;
+
+  // Query highest existing sequence number directly from database table
+  try {
+    const lastEntry: any = await tx.$queryRawUnsafe(
+      `SELECT "entryNo" FROM "StockEntry" WHERE "entryNo" LIKE $1 ORDER BY "entryNo" DESC LIMIT 1`,
+      `STE-${currentYear}-%`
+    );
+    if (Array.isArray(lastEntry) && lastEntry.length > 0 && lastEntry[0]?.entryNo) {
+      const parts = String(lastEntry[0].entryNo).split('-');
+      const lastNum = parseInt(parts[parts.length - 1], 10);
+      if (!isNaN(lastNum) && lastNum >= maxSeq) {
+        maxSeq = lastNum;
+      }
+    }
+  } catch {}
+
   let entryNo = '';
   let attempts = 0;
-  while (attempts < 50) {
+  while (attempts < 100) {
     attempts++;
-    const updated = await tx.numberingSeries.update({ where: { id: series.id }, data: { current: { increment: 1 } } });
-    const digits = '#'.repeat(updated.digits || 5);
-    entryNo = updated.pattern.replace(digits, String(updated.current).padStart(updated.digits || 5, '0'));
-    const exists = await tx.stockEntry.findUnique({ where: { entryNo }, select: { id: true } });
-    if (!exists) break;
+    maxSeq++;
+    const digits = '#'.repeat(series.digits || 5);
+    const padded = String(maxSeq).padStart(series.digits || 5, '0');
+    let pattern = series.pattern || `STE-${currentYear}-#####`;
+    pattern = pattern
+      .replace('.YYYY.', String(currentYear))
+      .replace('{YYYY}', String(currentYear))
+      .replace('{YEAR}', String(currentYear))
+      .replace('{FY}', String(currentYear))
+      .replace('{SEQ}', padded)
+      .replace(digits, padded);
+
+    entryNo = pattern;
+    if (!entryNo.includes(padded)) {
+      entryNo = `${entryNo}-${padded}`;
+    }
+
+    try {
+      const existsRaw: any = await tx.$queryRawUnsafe(
+        `SELECT count(*)::int as count FROM "StockEntry" WHERE "entryNo" = $1`,
+        entryNo
+      );
+      const count = Array.isArray(existsRaw) && existsRaw[0]?.count ? Number(existsRaw[0].count) : 0;
+      if (count === 0) {
+        await tx.numberingSeries.update({
+          where: { id: series.id },
+          data: { current: maxSeq },
+        }).catch(() => null);
+        break;
+      }
+    } catch {
+      break;
+    }
   }
+
+  // Guaranteed unique timestamp fallback
+  try {
+    const finalCheck: any = await tx.$queryRawUnsafe(
+      `SELECT count(*)::int as count FROM "StockEntry" WHERE "entryNo" = $1`,
+      entryNo
+    );
+    const finalCount = Array.isArray(finalCheck) && finalCheck[0]?.count ? Number(finalCheck[0].count) : 0;
+    if (finalCount > 0) {
+      entryNo = `STE-${currentYear}-${Date.now().toString().slice(-6)}`;
+    }
+  } catch {}
+
   return entryNo;
 }
 
@@ -208,7 +278,6 @@ export const createStockEntry = async (req: Request, res: Response) => {
     }));
     return success(res, entry, 'Stock entry created', 201);
   } catch (err: any) {
-    if (err.message) return error(res, err.message, 400);
     return handlePrismaError(res, err);
   }
 };
