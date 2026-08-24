@@ -126,8 +126,28 @@ export const createMaterialRequestsFromReorder = async (_req: Request, res: Resp
 };
 
 export const updateMaterialRequestStatus = async (req: Request, res: Response) => {
-  try { return success(res, await (prisma as any).materialRequest.update({ where: { id: req.params.id }, data: { status: req.body.status, submittedAt: req.body.status === 'SUBMITTED' ? new Date() : undefined, cancelledAt: req.body.status === 'CANCELLED' ? new Date() : undefined } }), 'Material request status updated'); }
-  catch (err: any) { return handlePrismaError(res, err); }
+  try {
+    let status = req.body.status;
+    if (status === 'STOPPED' || status === 'STOP') {
+      status = 'CANCELLED';
+    }
+    const validStatuses = ['DRAFT', 'SUBMITTED', 'CANCELLED'];
+    if (!validStatuses.includes(status)) {
+      return error(res, `Invalid status ${req.body.status}. Allowed statuses are DRAFT, SUBMITTED, CANCELLED`, 400);
+    }
+    const updated = await (prisma as any).materialRequest.update({
+      where: { id: req.params.id },
+      data: {
+        status,
+        submittedAt: status === 'SUBMITTED' ? new Date() : undefined,
+        cancelledAt: status === 'CANCELLED' ? new Date() : undefined,
+      },
+    });
+    return success(res, updated, 'Material request status updated');
+  } catch (err: any) {
+    if (!err.code && err.message) return error(res, err.message, 400);
+    return handlePrismaError(res, err);
+  }
 };
 
 export const getRfqs = async (req: Request, res: Response) => list(res, 'requestForQuotation', req, req.query.status ? { status: req.query.status } : {}, { materialRequest: true, items: { include: { product: true } }, suppliers: { include: { supplier: true } }, supplierQuotations: true });

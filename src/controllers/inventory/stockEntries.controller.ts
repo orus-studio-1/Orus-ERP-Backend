@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { Prisma } from '@prisma/client';
+import { Prisma, StockEntryPurpose } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { success, paginated, error } from '../../utils/response';
 import { handlePrismaError } from '../../utils/prismaError';
@@ -18,8 +18,17 @@ async function nextStockEntryNo(tx: any) {
       data: { documentType: 'STOCK_ENTRY', name: 'STE-DEFAULT', pattern: `STE-${new Date().getFullYear()}-#####`, prefix: 'STE', digits: 5, isDefault: true },
     });
   }
-  const updated = await tx.numberingSeries.update({ where: { id: series.id }, data: { current: { increment: 1 } } });
-  return updated.pattern.replace('#'.repeat(updated.digits), String(updated.current).padStart(updated.digits, '0'));
+  let entryNo = '';
+  let attempts = 0;
+  while (attempts < 50) {
+    attempts++;
+    const updated = await tx.numberingSeries.update({ where: { id: series.id }, data: { current: { increment: 1 } } });
+    const digits = '#'.repeat(updated.digits || 5);
+    entryNo = updated.pattern.replace(digits, String(updated.current).padStart(updated.digits || 5, '0'));
+    const exists = await tx.stockEntry.findUnique({ where: { entryNo }, select: { id: true } });
+    if (!exists) break;
+  }
+  return entryNo;
 }
 
 function itemData(items: any[] = []) {
@@ -30,7 +39,7 @@ function itemData(items: any[] = []) {
     valuationRate: new Prisma.Decimal(item.valuationRate || item.rate || 0),
     batchId: item.batchId || undefined,
     serialNoId: item.serialNoId || undefined,
-    remarks: item.remarks,
+    remarks: item.remarks || undefined,
   }));
 }
 
@@ -164,17 +173,35 @@ export const getStockEntry = async (req: Request, res: Response) => {
 
 export const createStockEntry = async (req: Request, res: Response) => {
   try {
-    const { purpose, postingDate, fromWarehouseId, toWarehouseId, remarks, items = [] } = req.body;
-    if (!purpose) return error(res, 'purpose is required', 400);
+    const { postingDate, fromWarehouseId, toWarehouseId, remarks, items = [] } = req.body;
+    const rawPurpose = req.body.purpose || req.body.type || req.body.entryType || 'MATERIAL_RECEIPT';
+    const validPurposes: string[] = [
+      'MATERIAL_RECEIPT',
+      'MATERIAL_ISSUE',
+      'MATERIAL_TRANSFER',
+      'STOCK_RECONCILIATION',
+      'OPENING_STOCK',
+      'REPACK',
+      'MANUFACTURE',
+      'SCRAP',
+      'CUSTOMER_RETURN',
+      'SUPPLIER_RETURN',
+      'JOB_WORK_ISSUE',
+      'JOB_WORK_RECEIPT',
+    ];
+    const normalizedPurpose = String(rawPurpose).toUpperCase().replace(/[-\s]+/g, '_');
+    const purpose: StockEntryPurpose = (validPurposes.includes(normalizedPurpose) ? normalizedPurpose : 'MATERIAL_RECEIPT') as StockEntryPurpose;
+
     if (!items.length) return error(res, 'At least one stock entry item is required', 400);
     const entry = await prisma.$transaction(async (tx) => tx.stockEntry.create({
       data: {
         entryNo: await nextStockEntryNo(tx),
         purpose,
+        companyId: req.body.companyId || (req as any).user?.companyId || undefined,
         postingDate: postingDate ? new Date(postingDate) : new Date(),
         fromWarehouseId: fromWarehouseId || undefined,
         toWarehouseId: toWarehouseId || undefined,
-        remarks,
+        remarks: remarks || undefined,
         items: { create: itemData(items) },
       },
       include,
@@ -213,12 +240,41 @@ export const updateStockEntryStatus = async (req: Request, res: Response) => {
 
 export const amendStockEntry = async (req: Request, res: Response) => {
   try {
-    const amended = await prisma.$transaction(async tx => {
+    const amended = await prisma.$transaction(async (tx: any) => {
       const source = await tx.stockEntry.findUnique({ where: { id: req.params.id }, include: { items: true } });
       if (!source) throw new Error('Stock entry not found');
       if (source.status !== 'CANCELLED') throw new Error('Only cancelled stock entries can be amended');
-      return tx.stockEntry.create({ data: { entryNo: await nextStockEntryNo(tx), companyId: source.companyId, purpose: source.purpose, postingDate: new Date(), fromWarehouseId: source.fromWarehouseId, toWarehouseId: source.toWarehouseId, remarks: source.remarks, amendedFromId: source.id, revisionNo: source.revisionNo + 1, sourceDocumentType: source.sourceDocumentType, sourceDocumentId: source.sourceDocumentId, items: { create: source.items.map(item => ({ productId: item.productId, warehouseId: item.warehouseId, quantity: item.quantity, valuationRate: item.valuationRate, batchId: item.batchId, serialNoId: item.serialNoId, remarks: item.remarks })) } }, include });
+      const s: any = source;
+      return tx.stockEntry.create({
+        data: {
+          entryNo: await nextStockEntryNo(tx),
+          companyId: s.companyId || undefined,
+          purpose: s.purpose,
+          postingDate: new Date(),
+          fromWarehouseId: s.fromWarehouseId || undefined,
+          toWarehouseId: s.toWarehouseId || undefined,
+          remarks: s.remarks || undefined,
+          amendedFromId: s.id,
+          revisionNo: (s.revisionNo || 1) + 1,
+          sourceDocumentType: s.sourceDocumentType || undefined,
+          sourceDocumentId: s.sourceDocumentId || undefined,
+          items: {
+            create: (s.items || []).map((item: any) => ({
+              productId: item.productId,
+              warehouseId: item.warehouseId || undefined,
+              quantity: item.quantity,
+              valuationRate: item.valuationRate,
+              batchId: item.batchId || undefined,
+              serialNoId: item.serialNoId || undefined,
+              remarks: item.remarks || undefined,
+            })),
+          },
+        },
+        include,
+      });
     });
     return success(res, amended, 'Stock entry amendment created', 201);
-  } catch (err: any) { return error(res, err.message || 'Could not amend stock entry', err.message?.includes('not found') ? 404 : 400); }
+  } catch (err: any) {
+    return error(res, err.message || 'Could not amend stock entry', err.message?.includes('not found') ? 404 : 400);
+  }
 };

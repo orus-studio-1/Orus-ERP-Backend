@@ -42,5 +42,9 @@ export function handlePrismaError(res: Response, err: any) {
     return error(res, 'Database error. Please check your input and try again.', 400, process.env.NODE_ENV === 'production' ? undefined : { code, meta: err?.meta });
   }
 
+  if (!code && err?.message) {
+    return error(res, err.message, 400);
+  }
+
   return error(res, 'Something went wrong. Please try again.', 500);
 }

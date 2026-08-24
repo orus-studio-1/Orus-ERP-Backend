@@ -24,14 +24,33 @@ export async function nextDocumentNo(tx: any, documentType: 'SALES_INVOICE' | 'P
     });
   }
 
-  const updated = await tx.numberingSeries.update({
-    where: { id: series.id },
-    data: { current: { increment: 1 } },
-  });
+  let docNo = '';
+  let attempts = 0;
+  while (attempts < 100) {
+    attempts++;
+    const updated = await tx.numberingSeries.update({
+      where: { id: series.id },
+      data: { current: { increment: 1 } },
+    });
+    const digits = '#'.repeat(updated.digits || 5);
+    const padded = String(updated.current).padStart(updated.digits || 5, '0');
+    docNo = updated.pattern.replace(digits, padded);
 
-  const digits = '#'.repeat(updated.digits);
-  const padded = String(updated.current).padStart(updated.digits, '0');
-  return updated.pattern.replace(digits, padded);
+    let exists = false;
+    if (documentType === 'SALES_INVOICE') {
+      const row = await tx.salesInvoice.findUnique({ where: { invoiceNo: docNo }, select: { id: true } });
+      exists = !!row;
+    } else if (documentType === 'PAYMENT_ENTRY') {
+      const row1 = await tx.paymentEntry.findUnique({ where: { paymentNo: docNo }, select: { id: true } });
+      const row2 = await tx.payment.findUnique({ where: { paymentNo: docNo }, select: { id: true } });
+      exists = !!row1 || !!row2;
+    } else if (documentType === 'CREDIT_NOTE') {
+      const row = await tx.creditNote.findUnique({ where: { creditNoteNo: docNo }, select: { id: true } });
+      exists = !!row;
+    }
+    if (!exists) break;
+  }
+  return docNo;
 }
 
 export function apiStatusToWhere(status?: string) {

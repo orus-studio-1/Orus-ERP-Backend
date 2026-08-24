@@ -32,19 +32,25 @@ export const getStockMovements = async (req: Request, res: Response) => {
 
 export const createStockMovement = async (req: Request, res: Response) => {
   try {
-    const { productId, warehouseId, type, quantity, unitCost, reference, notes } = req.body;
+    const { productId, warehouseId, type = 'IN', quantity, unitCost, reference, notes } = req.body;
+    if (!productId || !warehouseId || quantity === undefined || Number(quantity) <= 0) {
+      return error(res, 'Product, warehouse and a positive quantity are required', 400);
+    }
+    const movementType = ['IN', 'OUT', 'TRANSFER', 'ADJUSTMENT', 'RETURN'].includes(String(type).toUpperCase())
+      ? (String(type).toUpperCase() as any)
+      : 'IN';
 
     const movement = await prisma.$transaction(async (tx) => {
       const created = await tx.stockMovement.create({
-        data: { productId, warehouseId, type, quantity, unitCost, reference, notes },
+        data: { productId, warehouseId, type: movementType, quantity: Number(quantity), unitCost: unitCost ? Number(unitCost) : undefined, reference, notes },
         include: { product: true, warehouse: true },
       });
-      if (type === 'TRANSFER' && req.body.toWarehouseId) {
+      if (movementType === 'TRANSFER' && req.body.toWarehouseId) {
         await postStockTransfer(tx, {
           productId,
           fromWarehouseId: warehouseId,
           toWarehouseId: req.body.toWarehouseId,
-          quantity,
+          quantity: Number(quantity),
           rate: unitCost || 0,
           voucherType: 'STOCK_MOVEMENT',
           voucherId: created.id,
@@ -52,7 +58,7 @@ export const createStockMovement = async (req: Request, res: Response) => {
           remarks: notes,
         });
       } else {
-        const sign = type === 'OUT' ? -1 : 1;
+        const sign = movementType === 'OUT' ? -1 : 1;
         await postStockLedger(tx, {
           productId,
           warehouseId,
@@ -69,6 +75,7 @@ export const createStockMovement = async (req: Request, res: Response) => {
 
     return success(res, movement, 'Stock movement recorded', 201);
   } catch (err: any) {
+    if (!err.code && err.message) return error(res, err.message, 400);
     return handlePrismaError(res, err);
   }
 };
