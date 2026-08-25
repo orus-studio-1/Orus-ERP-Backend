@@ -66,6 +66,7 @@ const allowedExplicitOrigins = new Set([
   'http://127.0.0.1:3001',
   'http://127.0.0.1:8081',
   'https://erp-frontend-green.vercel.app',
+  'https://erp-frontend-beryl.vercel.app',
   ...configuredOrigins,
 ]);
 
