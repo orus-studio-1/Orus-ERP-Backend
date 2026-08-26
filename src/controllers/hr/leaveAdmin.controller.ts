@@ -47,6 +47,45 @@ export const createLeaveAllocation = async (req: Request, res: Response) => {
   }
 };
 
+export const updateLeaveAllocation = async (req: Request, res: Response) => {
+  try {
+    const { allocated, fromDate, toDate } = req.body;
+    const existing = await prisma.leaveAllocation.findUnique({ where: { id: req.params.id } });
+    if (!existing) return error(res, 'Leave allocation not found', 404);
+
+    const newAllocated = allocated !== undefined ? Number(allocated) : Number(existing.allocated);
+    const newBalance = newAllocated - Number(existing.used);
+    if (newBalance < 0) return error(res, 'Allocated leaves cannot be less than already used leaves', 400);
+
+    const updated = await prisma.leaveAllocation.update({
+      where: { id: req.params.id },
+      data: {
+        allocated: newAllocated,
+        balance: newBalance,
+        ...(fromDate ? { fromDate: new Date(fromDate) } : {}),
+        ...(toDate ? { toDate: new Date(toDate) } : {}),
+      },
+      include: { employee: { include: { user: { select: { firstName: true, lastName: true } } } }, leaveType: true },
+    });
+    return success(res, updated, 'Leave allocation updated');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
+export const deleteLeaveAllocation = async (req: Request, res: Response) => {
+  try {
+    const existing = await prisma.leaveAllocation.findUnique({ where: { id: req.params.id } });
+    if (!existing) return error(res, 'Leave allocation not found', 404);
+    if (Number(existing.used) > 0) return error(res, 'Cannot delete an allocation that has already been used for approved leaves', 400);
+
+    await prisma.leaveAllocation.delete({ where: { id: req.params.id } });
+    return success(res, null, 'Leave allocation deleted');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
 export const getLeaveLedger = async (req: Request, res: Response) => {
   try {
     const where: any = { employee: { user: { companyId: (req as any).user?.companyId || '__missing_company__' } } };
@@ -88,3 +127,47 @@ export const getLeavePolicies = async (_req: Request, res: Response) => {
     return handlePrismaError(res, err);
   }
 };
+
+export const updateLeavePolicy = async (req: Request, res: Response) => {
+  try {
+    const { name, description, details } = req.body;
+    const policy = await prisma.$transaction(async (tx) => {
+      if (details && Array.isArray(details)) {
+        await tx.leavePolicyDetail.deleteMany({ where: { leavePolicyId: req.params.id } });
+        return tx.leavePolicy.update({
+          where: { id: req.params.id },
+          data: {
+            ...(name ? { name } : {}),
+            ...(description !== undefined ? { description } : {}),
+            details: { create: details.map((d: any) => ({ leaveTypeId: d.leaveTypeId, annualAllocation: Number(d.annualAllocation || 0) })) },
+          },
+          include: { details: { include: { leaveType: true } } },
+        });
+      }
+      return tx.leavePolicy.update({
+        where: { id: req.params.id },
+        data: {
+          ...(name ? { name } : {}),
+          ...(description !== undefined ? { description } : {}),
+        },
+        include: { details: { include: { leaveType: true } } },
+      });
+    });
+    return success(res, policy, 'Leave policy updated');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
+export const deleteLeavePolicy = async (req: Request, res: Response) => {
+  try {
+    await prisma.$transaction(async (tx) => {
+      await tx.leavePolicyDetail.deleteMany({ where: { leavePolicyId: req.params.id } });
+      await tx.leavePolicy.delete({ where: { id: req.params.id } });
+    });
+    return success(res, null, 'Leave policy deleted');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+

@@ -24,7 +24,36 @@ export const createLeaveType = async (req: Request, res: Response) => {
   }
 };
 
+export const updateLeaveType = async (req: Request, res: Response) => {
+  try {
+    const { name, daysAllowed, isPaid, description, isActive } = req.body;
+    const lt = await prisma.leaveType.update({
+      where: { id: req.params.id },
+      data: {
+        ...(name ? { name } : {}),
+        ...(daysAllowed !== undefined ? { daysAllowed: Number(daysAllowed) } : {}),
+        ...(isPaid !== undefined ? { isPaid: Boolean(isPaid) } : {}),
+        ...(description !== undefined ? { description } : {}),
+        ...(isActive !== undefined ? { isActive: Boolean(isActive) } : {}),
+      },
+    });
+    return success(res, lt, 'Leave type updated');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
+export const deleteLeaveType = async (req: Request, res: Response) => {
+  try {
+    await prisma.leaveType.delete({ where: { id: req.params.id } });
+    return success(res, null, 'Leave type deleted');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
 export const getLeaveBalances = async (req: Request, res: Response) => {
+
   try {
     const { employeeId, date } = req.query as any;
     if (!employeeId) return error(res, 'employeeId is required', 400);
@@ -194,3 +223,46 @@ export const approveLeaveRequest = async (req: Request, res: Response) => {
     return error(res, err.message || 'Unable to update leave request', 400);
   }
 };
+
+export const updateLeaveRequest = async (req: Request, res: Response) => {
+  try {
+    const { leaveTypeId, startDate, endDate, reason } = req.body;
+    const existing = await prisma.leaveRequest.findUnique({ where: { id: req.params.id } });
+    if (!existing) return error(res, 'Leave request not found', 404);
+    if (existing.status !== 'PENDING') return error(res, 'Only pending leave requests can be updated', 400);
+
+    const start = startDate ? dayStart(new Date(startDate)) : existing.startDate;
+    const end = endDate ? dayStart(new Date(endDate)) : existing.endDate;
+    if (end < start) return error(res, 'End date cannot be before start date', 400);
+    const days = daysBetweenInclusive(start, end);
+
+    const updated = await prisma.leaveRequest.update({
+      where: { id: req.params.id },
+      data: {
+        ...(leaveTypeId ? { leaveTypeId } : {}),
+        startDate: start,
+        endDate: end,
+        days,
+        ...(reason !== undefined ? { reason } : {}),
+      },
+      include: { leaveType: true, employee: { include: { user: { select: { firstName: true, lastName: true } } } } },
+    });
+    return success(res, updated, 'Leave request updated');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
+export const deleteLeaveRequest = async (req: Request, res: Response) => {
+  try {
+    const existing = await prisma.leaveRequest.findUnique({ where: { id: req.params.id } });
+    if (!existing) return error(res, 'Leave request not found', 404);
+    if (existing.status !== 'PENDING') return error(res, 'Only pending leave requests can be deleted', 400);
+
+    await prisma.leaveRequest.delete({ where: { id: req.params.id } });
+    return success(res, null, 'Leave request deleted');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+

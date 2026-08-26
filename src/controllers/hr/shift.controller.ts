@@ -93,6 +93,18 @@ export const updateShiftType = async (req: Request, res: Response) => {
   }
 };
 
+export const deleteShiftType = async (req: Request, res: Response) => {
+  try {
+    const assignmentsCount = await prisma.shiftAssignment.count({ where: { shiftTypeId: req.params.id } });
+    if (assignmentsCount > 0) return error(res, 'Cannot delete shift type with active or historic assignments', 400);
+
+    await prisma.shiftType.delete({ where: { id: req.params.id } });
+    return success(res, null, 'Shift type deleted');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
 export const getShiftAssignments = async (req: Request, res: Response) => {
   try {
     const { employeeId, shiftTypeId, status, date } = req.query as any;
@@ -151,10 +163,15 @@ export const assignShift = async (req: Request, res: Response) => {
 
 export const updateShiftAssignment = async (req: Request, res: Response) => {
   try {
-    const { status, endDate } = req.body;
+    const { status, endDate, shiftTypeId, startDate } = req.body;
     const item = await prisma.shiftAssignment.update({
       where: { id: req.params.id },
-      data: { status, endDate: endDate ? dayStart(new Date(endDate)) : undefined },
+      data: {
+        ...(status ? { status } : {}),
+        ...(shiftTypeId ? { shiftTypeId } : {}),
+        ...(startDate ? { startDate: dayStart(new Date(startDate)) } : {}),
+        ...(endDate !== undefined ? { endDate: endDate ? dayStart(new Date(endDate)) : null } : {}),
+      },
       include: assignmentInclude,
     });
     return success(res, item, 'Shift assignment updated');
@@ -162,6 +179,16 @@ export const updateShiftAssignment = async (req: Request, res: Response) => {
     return handlePrismaError(res, err);
   }
 };
+
+export const deleteShiftAssignment = async (req: Request, res: Response) => {
+  try {
+    await prisma.shiftAssignment.delete({ where: { id: req.params.id } });
+    return success(res, null, 'Shift assignment deleted');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
 
 export const getShiftRoster = async (req: Request, res: Response) => {
   try {

@@ -307,6 +307,54 @@ export const updateStockEntryStatus = async (req: Request, res: Response) => {
   }
 };
 
+export const updateStockEntry = async (req: Request, res: Response) => {
+  try {
+    const { postingDate, fromWarehouseId, toWarehouseId, remarks, items, purpose } = req.body;
+    const entry = await prisma.$transaction(async (tx) => {
+      const existing = await tx.stockEntry.findUnique({ where: { id: req.params.id }, include: { items: true } });
+      if (!existing) throw new Error('Stock entry not found');
+      if (existing.status !== 'DRAFT') throw new Error('Only draft stock entries can be modified');
+
+      if (items && Array.isArray(items)) {
+        await tx.stockEntryItem.deleteMany({ where: { stockEntryId: req.params.id } });
+      }
+
+      return tx.stockEntry.update({
+        where: { id: req.params.id },
+        data: {
+          ...(purpose ? { purpose } : {}),
+          ...(postingDate ? { postingDate: new Date(postingDate) } : {}),
+          ...(fromWarehouseId !== undefined ? { fromWarehouseId: fromWarehouseId || null } : {}),
+          ...(toWarehouseId !== undefined ? { toWarehouseId: toWarehouseId || null } : {}),
+          ...(remarks !== undefined ? { remarks: remarks || null } : {}),
+          ...(items && Array.isArray(items) ? { items: { create: itemData(items) } } : {}),
+        },
+        include,
+      });
+    });
+    return success(res, entry, 'Stock entry updated');
+  } catch (err: any) {
+    if (err.message) return error(res, err.message, err.message.includes('not found') ? 404 : 400);
+    return handlePrismaError(res, err);
+  }
+};
+
+export const deleteStockEntry = async (req: Request, res: Response) => {
+  try {
+    const entry = await prisma.stockEntry.findUnique({ where: { id: req.params.id } });
+    if (!entry) return error(res, 'Stock entry not found', 404);
+    if (entry.status !== 'DRAFT') return error(res, 'Only draft stock entries can be deleted', 400);
+
+    await prisma.$transaction(async (tx) => {
+      await tx.stockEntryItem.deleteMany({ where: { stockEntryId: req.params.id } });
+      await tx.stockEntry.delete({ where: { id: req.params.id } });
+    });
+    return success(res, null, 'Stock entry deleted');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
 export const amendStockEntry = async (req: Request, res: Response) => {
   try {
     const amended = await prisma.$transaction(async (tx: any) => {
@@ -347,3 +395,4 @@ export const amendStockEntry = async (req: Request, res: Response) => {
     return error(res, err.message || 'Could not amend stock entry', err.message?.includes('not found') ? 404 : 400);
   }
 };
+

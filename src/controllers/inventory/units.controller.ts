@@ -23,6 +23,26 @@ export const createUnit = async (req: Request, res: Response) => {
   }
 };
 
+export const updateUnit = async (req: Request, res: Response) => {
+  try {
+    const name = req.body.name !== undefined ? String(req.body.name).trim() : undefined;
+    const symbol = req.body.symbol !== undefined ? String(req.body.symbol).trim() : undefined;
+    if (name === '' || symbol === '') {
+      return error(res, 'Unit name and symbol cannot be empty', 400);
+    }
+    const unit = await prisma.unit.update({
+      where: { id: req.params.id },
+      data: {
+        ...(name !== undefined ? { name } : {}),
+        ...(symbol !== undefined ? { symbol } : {}),
+      },
+    });
+    return success(res, unit, 'Unit updated');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
 export const deleteUnit = async (req: Request, res: Response) => {
   try {
     await prisma.unit.delete({ where: { id: req.params.id } });
@@ -31,3 +51,4 @@ export const deleteUnit = async (req: Request, res: Response) => {
     return handlePrismaError(res, err);
   }
 };
+

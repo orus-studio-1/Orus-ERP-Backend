@@ -1,4 +1,4 @@
-﻿import { Request, Response } from 'express';
+import { Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 import prisma from '../lib/prisma';
 import { success, paginated, error } from '../utils/response';
@@ -197,6 +197,55 @@ export const createJournalEntry = async (req: Request, res: Response) => {
     return handlePrismaError(res, err);
   }
 };
+export const updateJournalEntry = async (req: Request, res: Response) => {
+  try {
+    const { date, description, reference, lines } = req.body;
+    const entry = await prisma.$transaction(async (tx) => {
+      const existing = await tx.journalEntry.findUnique({ where: { id: req.params.id }, include: { lines: true } });
+      if (!existing) throw new Error('Journal entry not found');
+      if (existing.status !== 'DRAFT' && existing.status !== 'PENDING_APPROVAL') {
+        throw new Error('Only draft or pending journal entries can be modified');
+      }
+
+      if (lines && Array.isArray(lines)) {
+        const validation = validateJournalPayload(lines);
+        if (validation) throw new Error(validation);
+        const totalDebit = lines.reduce((s: number, l: any) => s + (l.debit || 0), 0);
+        const totalCredit = lines.reduce((s: number, l: any) => s + (l.credit || 0), 0);
+
+        await tx.journalLine.deleteMany({ where: { journalEntryId: req.params.id } });
+
+        return tx.journalEntry.update({
+          where: { id: req.params.id },
+          data: {
+            ...(date ? { date: new Date(date) } : {}),
+            ...(description !== undefined ? { description } : {}),
+            ...(reference !== undefined ? { reference } : {}),
+            ...(req.body.entryType ? { entryType: req.body.entryType } : {}),
+            totalDebit,
+            totalCredit,
+            lines: { create: lines },
+          },
+          include: { lines: { include: { debitAccount: true, creditAccount: true } } },
+        });
+      }
+
+      return tx.journalEntry.update({
+        where: { id: req.params.id },
+        data: {
+          ...(date ? { date: new Date(date) } : {}),
+          ...(description !== undefined ? { description } : {}),
+          ...(reference !== undefined ? { reference } : {}),
+        },
+        include: { lines: { include: { debitAccount: true, creditAccount: true } } },
+      });
+    });
+    return success(res, entry, 'Journal entry updated');
+  } catch (err: any) {
+    if (err.message) return error(res, err.message, err.message.includes('not found') ? 404 : 400);
+    return handlePrismaError(res, err);
+  }
+};
 
 export const postJournalEntry = async (req: Request, res: Response) => {
   try {
@@ -291,6 +340,44 @@ export const createFiscalYear = async (req: Request, res: Response) => {
   }
 };
 
+export const updateFiscalYear = async (req: Request, res: Response) => {
+  try {
+    const { name, startDate, endDate, isClosed } = req.body;
+    const year = await prisma.fiscalYear.update({
+      where: { id: req.params.id },
+      data: {
+        ...(name ? { name } : {}),
+        ...(startDate ? { startDate: new Date(startDate) } : {}),
+        ...(endDate ? { endDate: new Date(endDate) } : {}),
+        ...(isClosed !== undefined ? { isClosed: Boolean(isClosed) } : {}),
+      },
+      include: { periods: true },
+    });
+    return success(res, year, 'Fiscal year updated');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
+export const deleteFiscalYear = async (req: Request, res: Response) => {
+  try {
+    const year = await prisma.fiscalYear.findUnique({ where: { id: req.params.id }, include: { periods: true } });
+    if (!year) return error(res, 'Fiscal year not found', 404);
+    if (year.isClosed) return error(res, 'Cannot delete a closed fiscal year', 400);
+
+    const hasLedgerEntries = await prisma.generalLedgerEntry.findFirst({ where: { fiscalYearId: req.params.id } });
+    if (hasLedgerEntries) return error(res, 'Cannot delete a fiscal year with posted general ledger entries', 400);
+
+    await prisma.$transaction(async (tx) => {
+      await tx.period.deleteMany({ where: { fiscalYearId: req.params.id } });
+      await tx.fiscalYear.delete({ where: { id: req.params.id } });
+    });
+    return success(res, null, 'Fiscal year deleted');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
 export const updatePeriod = async (req: Request, res: Response) => {
   try {
     const period = await prisma.period.update({ where: { id: req.params.id }, data: pickDefined(req.body, ['name', 'startDate', 'endDate', 'fiscalYearId', 'isClosed']) as any });
@@ -319,6 +406,34 @@ export const createCostCenter = async (req: Request, res: Response) => {
   }
 };
 
+export const updateCostCenter = async (req: Request, res: Response) => {
+  try {
+    const item = await prisma.costCenter.update({
+      where: { id: req.params.id },
+      data: pickDefined(req.body, ['code', 'name', 'parentId', 'isGroup', 'isActive']) as any,
+      include: { parent: true, children: true },
+    });
+    return success(res, item, 'Cost center updated');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
+export const deleteCostCenter = async (req: Request, res: Response) => {
+  try {
+    const hasChildren = await prisma.costCenter.findFirst({ where: { parentId: req.params.id } });
+    if (hasChildren) return error(res, 'Cannot delete cost center with child centers', 400);
+
+    const hasLedger = await prisma.generalLedgerEntry.findFirst({ where: { costCenterId: req.params.id } });
+    if (hasLedger) return error(res, 'Cannot delete cost center with ledger transactions', 400);
+
+    await prisma.costCenter.delete({ where: { id: req.params.id } });
+    return success(res, null, 'Cost center deleted');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
 export const getBudgets = async (req: Request, res: Response) => {
   try {
     const budgets = await prisma.budget.findMany({
@@ -334,14 +449,43 @@ export const getBudgets = async (req: Request, res: Response) => {
 
 export const createBudget = async (req: Request, res: Response) => {
   try {
-    const { fiscalYearId, accountId, amount } = req.body;
+    const { fiscalYearId, accountId, costCenterId, amount } = req.body;
     if (!fiscalYearId || !accountId || amount === undefined) return error(res, 'fiscalYearId, accountId and amount are required', 400);
-    const budget = await prisma.budget.create({ data: { ...req.body, amount } });
+    const budget = await prisma.budget.create({ data: { ...req.body, costCenterId: costCenterId || undefined, amount } });
     return success(res, budget, 'Budget created', 201);
   } catch (err: any) {
     return handlePrismaError(res, err);
   }
 };
+
+export const updateBudget = async (req: Request, res: Response) => {
+  try {
+    const { fiscalYearId, accountId, costCenterId, amount } = req.body;
+    const budget = await prisma.budget.update({
+      where: { id: req.params.id },
+      data: {
+        ...(fiscalYearId ? { fiscalYearId } : {}),
+        ...(accountId ? { accountId } : {}),
+        ...(costCenterId !== undefined ? { costCenterId: costCenterId || null } : {}),
+        ...(amount !== undefined ? { amount } : {}),
+      },
+      include: { account: true, costCenter: true },
+    });
+    return success(res, budget, 'Budget updated');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
+export const deleteBudget = async (req: Request, res: Response) => {
+  try {
+    await prisma.budget.delete({ where: { id: req.params.id } });
+    return success(res, null, 'Budget deleted');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
 
 export const getGLEntries = async (req: Request, res: Response) => {
   try {
@@ -592,6 +736,44 @@ export const submitPeriodClosingVoucher = async (req: Request, res: Response) =>
   }
 };
 
+export const updateBankStatementLine = async (req: Request, res: Response) => {
+  try {
+    const existing = await prisma.bankStatementLine.findUnique({ where: { id: req.params.id } });
+    if (!existing) return error(res, 'Bank statement line not found', 404);
+    if (existing.isReconciled) return error(res, 'Cannot edit already reconciled bank statement line', 400);
+
+    const { accountId, statementDate, description, debit, credit, reference } = req.body;
+    const line = await prisma.bankStatementLine.update({
+      where: { id: req.params.id },
+      data: {
+        ...(accountId ? { accountId } : {}),
+        ...(statementDate ? { statementDate: new Date(statementDate) } : {}),
+        ...(description ? { description } : {}),
+        ...(debit !== undefined ? { debit } : {}),
+        ...(credit !== undefined ? { credit } : {}),
+        ...(reference !== undefined ? { reference } : {}),
+      },
+      include: { account: true },
+    });
+    return success(res, line, 'Bank statement line updated');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
+export const deleteBankStatementLine = async (req: Request, res: Response) => {
+  try {
+    const existing = await prisma.bankStatementLine.findUnique({ where: { id: req.params.id } });
+    if (!existing) return error(res, 'Bank statement line not found', 404);
+    if (existing.isReconciled) return error(res, 'Cannot delete reconciled bank statement line', 400);
+
+    await prisma.bankStatementLine.delete({ where: { id: req.params.id } });
+    return success(res, null, 'Bank statement line deleted');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
 export const getJournalTemplates = async (_req: Request, res: Response) => {
   try {
     const templates = await prisma.journalEntryTemplate.findMany({ include: { lines: true, recurringEntries: true }, orderBy: { createdAt: 'desc' } });
@@ -607,6 +789,49 @@ export const createJournalTemplate = async (req: Request, res: Response) => {
     if (!name || !lines.length) return error(res, 'name and lines are required', 400);
     const template = await prisma.journalEntryTemplate.create({ data: { name, description: req.body.description, lines: { create: lines } }, include: { lines: true } });
     return success(res, template, 'Journal template created', 201);
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
+export const updateJournalTemplate = async (req: Request, res: Response) => {
+  try {
+    const { name, description, lines } = req.body;
+    const template = await prisma.$transaction(async (tx) => {
+      if (lines && Array.isArray(lines)) {
+        await tx.journalEntryTemplateLine.deleteMany({ where: { templateId: req.params.id } });
+        return tx.journalEntryTemplate.update({
+          where: { id: req.params.id },
+          data: {
+            ...(name ? { name } : {}),
+            ...(description !== undefined ? { description } : {}),
+            lines: { create: lines },
+          },
+          include: { lines: true },
+        });
+      }
+      return tx.journalEntryTemplate.update({
+        where: { id: req.params.id },
+        data: {
+          ...(name ? { name } : {}),
+          ...(description !== undefined ? { description } : {}),
+        },
+        include: { lines: true },
+      });
+    });
+    return success(res, template, 'Journal template updated');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
+export const deleteJournalTemplate = async (req: Request, res: Response) => {
+  try {
+    await prisma.$transaction(async (tx) => {
+      await tx.journalEntryTemplateLine.deleteMany({ where: { templateId: req.params.id } });
+      await tx.journalEntryTemplate.delete({ where: { id: req.params.id } });
+    });
+    return success(res, null, 'Journal template deleted');
   } catch (err: any) {
     return handlePrismaError(res, err);
   }
@@ -643,6 +868,38 @@ export const createFixedAsset = async (req: Request, res: Response) => {
   }
 };
 
+export const updateFixedAsset = async (req: Request, res: Response) => {
+  try {
+    const { assetNo, name, accountId, acquisitionDate, cost, usefulLifeMonths, salvageValue, status } = req.body;
+    const asset = await prisma.fixedAsset.update({
+      where: { id: req.params.id },
+      data: {
+        ...(assetNo ? { assetNo } : {}),
+        ...(name ? { name } : {}),
+        ...(accountId ? { accountId } : {}),
+        ...(acquisitionDate ? { acquisitionDate: new Date(acquisitionDate) } : {}),
+        ...(cost !== undefined ? { cost } : {}),
+        ...(usefulLifeMonths !== undefined ? { usefulLifeMonths } : {}),
+        ...(salvageValue !== undefined ? { salvageValue } : {}),
+        ...(status ? { status } : {}),
+      },
+      include: { account: true },
+    });
+    return success(res, asset, 'Fixed asset updated');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
+export const deleteFixedAsset = async (req: Request, res: Response) => {
+  try {
+    await prisma.fixedAsset.delete({ where: { id: req.params.id } });
+    return success(res, null, 'Fixed asset deleted');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
 export const postAssetDepreciation = async (req: Request, res: Response) => {
   try {
     const result = await prisma.$transaction(async (tx) => {
@@ -662,3 +919,4 @@ export const postAssetDepreciation = async (req: Request, res: Response) => {
     return handlePrismaError(res, err);
   }
 };
+
