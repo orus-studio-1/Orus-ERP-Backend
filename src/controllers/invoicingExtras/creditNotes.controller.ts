@@ -115,6 +115,24 @@ export const createCreditNoteFromInvoice = async (req: Request, res: Response) =
   return createCreditNote(req, res);
 };
 
+export const updateCreditNote = async (req: Request, res: Response) => {
+  try {
+    const note = await prisma.$transaction(async (tx) => {
+      const existing = await tx.creditNote.findUnique({ where: { id: req.params.id } });
+      if (!existing) throw new Error('Credit note not found');
+      if (existing.status !== 'DRAFT') throw new Error('Only draft credit notes can be edited');
+      const sourceItems = (req.body.items || []).map((item: any) => ({ productId: item.productId, itemCode: item.itemCode || '', description: item.description, quantity: item.quantity, unitPrice: item.rate ?? item.unitPrice, taxRate: item.taxRate || 0, discount: item.discount || 0 }));
+      if (!sourceItems.length) throw new Error('At least one credit note item is required');
+      const totals = calculateInvoiceTotals(sourceItems);
+      await tx.creditNoteItem.deleteMany({ where: { creditNoteId: existing.id } });
+      const updated = await tx.creditNote.update({ where: { id: existing.id }, data: { reason: req.body.reason, date: req.body.date ? new Date(req.body.date) : undefined, notes: req.body.notes, subtotal: totals.subtotal, taxAmount: totals.taxAmount, grandTotal: totals.grandTotal, items: { create: totals.lines.map(line => ({ productId: line.productId, itemCode: line.itemCode, description: line.description, quantity: line.quantity, rate: line.rate, discount: line.discount, netAmount: line.netAmount, taxAmount: line.taxAmount, total: line.total })) } }, include: { customer: true, originalInvoice: true, items: true } });
+      await audit(tx, req, { entityType: 'CREDIT_NOTE', entityId: updated.id, creditNoteId: updated.id, action: 'UPDATE', statusBefore: 'DRAFT', statusAfter: 'DRAFT', message: `Updated ${updated.creditNoteNo}` });
+      return updated;
+    });
+    return success(res, serializeCreditNote(note), 'Credit note updated');
+  } catch (err: any) { return error(res, err.message || 'Credit note update failed', err.message?.includes('not found') ? 404 : 400); }
+};
+
 export const updateCreditNoteStatus = async (req: Request, res: Response) => {
   try {
     const { status } = req.body;

@@ -47,6 +47,7 @@ import {
   updateSupplierPaymentStatus,
 } from '../controllers/procurement.controller';
 import { authenticate, requireModuleAccess } from '../middleware/auth';
+import { updateProcurementRecord } from '../controllers/procurement/editing.controller';
 import {
   acknowledgeRfq,
   acknowledgePurchaseOrder,
@@ -137,5 +138,7 @@ router.patch('/supplier-payments/:id/status', updateSupplierPaymentStatus);
 
 router.post('/vendor-ratings/calculate', calculateVendorRatings);
 router.get('/reports/:type', procurementReport);
+router.put('/:resource/:id', updateProcurementRecord);
+router.patch('/:resource/:id', updateProcurementRecord);
 
 export default router;

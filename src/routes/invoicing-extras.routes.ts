@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import {
   createCreditNote,
+  updateCreditNote,
   createCreditNoteFromInvoice,
   createPrintFormat,
   createSubscription,
@@ -33,7 +34,7 @@ router.patch('/tax-templates/:id', updateTaxTemplate);
 
 router.route('/credit-notes').get(getCreditNotes).post(createCreditNote);
 router.post('/credit-notes/from-invoice/:invoiceId', createCreditNoteFromInvoice);
-router.get('/credit-notes/:id', getCreditNote);
+router.route('/credit-notes/:id').get(getCreditNote).put(updateCreditNote).patch(updateCreditNote);
 router.patch('/credit-notes/:id/status', updateCreditNoteStatus);
 
 router.get('/ledger', getLedgerEntries);

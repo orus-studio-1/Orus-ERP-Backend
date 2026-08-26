@@ -119,6 +119,22 @@ export const createDeliveryNote = async (req: Request, res: Response) => {
   }
 };
 
+export const updateDeliveryNote = async (req: Request, res: Response) => {
+  try {
+    const { customerId, salesOrderId, warehouseId, date, postingDate, notes, items } = req.body;
+    const note = await prisma.$transaction(async (tx) => {
+      const existing = await tx.deliveryNote.findUnique({ where: { id: req.params.id } });
+      if (!existing) throw new Error('Delivery note not found');
+      if (existing.status !== 'DRAFT') throw new Error('Only draft delivery notes can be edited');
+      if (items) { const itemError = validateDeliveryItems(items); if (itemError) throw new Error(itemError); await tx.deliveryNoteItem.deleteMany({ where: { deliveryNoteId: existing.id } }); }
+      const updated = await tx.deliveryNote.update({ where: { id: existing.id }, data: { customerId, salesOrderId: salesOrderId || null, warehouseId: warehouseId || null, date: date ? new Date(date) : undefined, postingDate: postingDate ? new Date(postingDate) : null, notes, items: items ? { create: normalizeItems(items) } : undefined }, include: deliveryInclude });
+      await audit(tx, req, { entityType: 'DELIVERY_NOTE', entityId: updated.id, deliveryNoteId: updated.id, action: 'UPDATE', statusBefore: 'DRAFT', statusAfter: 'DRAFT', message: `Updated ${updated.deliveryNo}` });
+      return updated;
+    });
+    return success(res, serializeDelivery(note), 'Delivery note updated');
+  } catch (err: any) { return error(res, err.message || 'Delivery note update failed', err.message?.includes('not found') ? 404 : 400); }
+};
+
 export const createDeliveryNoteFromSalesOrder = async (req: Request, res: Response) => {
   try {
     const note = await prisma.$transaction(async (tx) => {

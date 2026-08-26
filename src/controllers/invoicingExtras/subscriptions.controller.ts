@@ -160,9 +160,10 @@ export const updateSubscription = async (req: Request, res: Response) => {
   try {
     const existing = await prisma.subscriptionTemplate.findUnique({ where: { id: req.params.id } });
     if (!existing) return error(res, 'Subscription not found', 404);
-    const subscription = await prisma.subscriptionTemplate.update({
-      where: { id: existing.id },
-      data: {
+    const subscription = await prisma.$transaction(async tx => {
+      if (req.body.items) await tx.subscriptionTemplateItem.deleteMany({ where: { subscriptionTemplateId: existing.id } });
+      return tx.subscriptionTemplate.update({ where: { id: existing.id }, data: {
+        customerId: req.body.customerId ?? existing.customerId,
         name: req.body.name ?? existing.name,
         frequency: req.body.frequency ?? existing.frequency,
         startDate: req.body.startDate ? new Date(req.body.startDate) : existing.startDate,
@@ -173,8 +174,8 @@ export const updateSubscription = async (req: Request, res: Response) => {
         currency: req.body.currency ?? existing.currency,
         notes: req.body.notes ?? existing.notes,
         terms: req.body.terms ?? existing.terms,
-      },
-      include: subscriptionInclude,
+        items: req.body.items ? { create: req.body.items.map((item: any) => ({ productId: item.productId, itemCode: item.itemCode || '', description: item.description, quantity: item.quantity, unitPrice: item.unitPrice, discount: item.discount || 0, taxRate: item.taxRate || 0, taxTemplateId: item.taxTemplateId })) } : undefined,
+      }, include: subscriptionInclude });
     });
     return success(res, serializeSubscription(subscription), 'Subscription updated');
   } catch (err: any) {

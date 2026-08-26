@@ -24,7 +24,7 @@ router.route('/quotations/:id').get(getQuotation).put(updateQuotation).delete(de
 router.post('/quotations/:id/convert', convertQuotationToOrder);
 
 router.route('/orders').get(getSalesOrders).post(createSalesOrder);
-router.route('/orders/:id').get(getSalesOrder).delete(deleteSalesOrder);
+router.route('/orders/:id').get(getSalesOrder).put(updateSalesOrder).patch(updateSalesOrder).delete(deleteSalesOrder);
 router.put('/orders/:id/status', updateSalesOrderStatus);
 
 router.put('/sales-orders/:id', updateSalesOrder);

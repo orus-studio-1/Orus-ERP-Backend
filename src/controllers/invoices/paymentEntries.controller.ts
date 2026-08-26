@@ -103,6 +103,23 @@ export const createPaymentEntry = async (req: Request, res: Response) => {
   }
 };
 
+export const updatePaymentEntry = async (req: Request, res: Response) => {
+  try {
+    const entry = await prisma.$transaction(async (tx) => {
+      const existing = await tx.paymentEntry.findUnique({ where: { id: req.params.id } });
+      if (!existing) throw new Error('Payment entry not found');
+      if (existing.status !== 'DRAFT') throw new Error('Only draft payment entries can be edited');
+      const paid = new Prisma.Decimal(req.body.paidAmount ?? existing.paidAmount);
+      const allocations = req.body.allocations || [];
+      const allocated = allocations.reduce((sum: Prisma.Decimal, row: any) => sum.plus(row.allocatedAmount || 0), new Prisma.Decimal(0));
+      if (paid.lte(0) || allocated.gt(paid)) throw new Error('Paid and allocated amounts are invalid');
+      await tx.paymentEntryAllocation.deleteMany({ where: { paymentEntryId: existing.id } });
+      return tx.paymentEntry.update({ where: { id: existing.id }, data: { type: req.body.type, customerId: req.body.customerId, date: req.body.date ? new Date(req.body.date) : undefined, paidAmount: paid, allocatedAmount: allocated, unallocatedAmount: paid.minus(allocated), currency: req.body.currency, method: req.body.method, reference: req.body.reference, notes: req.body.notes, allocations: { create: allocations.map((row: any) => ({ allocationType: row.allocationType || (row.creditNoteId ? 'CREDIT_NOTE' : row.invoiceId ? 'INVOICE' : 'ADVANCE'), invoiceId: row.invoiceId, creditNoteId: row.creditNoteId, allocatedAmount: row.allocatedAmount })) } }, include: { customer: true, allocations: { include: { invoice: true, creditNote: true } } } });
+    });
+    return success(res, serializePaymentEntry(entry), 'Payment entry updated');
+  } catch (err: any) { return error(res, err.message || 'Payment entry update failed', err.message?.includes('not found') ? 404 : 400); }
+};
+
 export const updatePaymentEntryStatus = async (req: Request, res: Response) => {
   try {
     const { status } = req.body;

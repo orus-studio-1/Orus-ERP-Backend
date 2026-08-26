@@ -37,6 +37,14 @@ export const createSavedView = async (req: AuthRequest, res: Response) => {
   }
 };
 
+export const updateSavedView = async (req: AuthRequest, res: Response) => {
+  try {
+    const result = await prisma.crmSavedView.updateMany({ where: { id: req.params.id, userId: req.user!.id }, data: { name: req.body.name, entity: req.body.entity, filters: req.body.filters, columns: req.body.columns, isDefault: req.body.isDefault } });
+    if (!result.count) return error(res, 'Saved view not found', 404);
+    return success(res, await prisma.crmSavedView.findUnique({ where: { id: req.params.id } }), 'Saved view updated');
+  } catch (err: any) { return handlePrismaError(res, err); }
+};
+
 export const deleteSavedView = async (req: AuthRequest, res: Response) => {
   try {
     await prisma.crmSavedView.deleteMany({ where: { id: req.params.id, userId: req.user!.id } });

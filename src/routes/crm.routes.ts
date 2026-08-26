@@ -6,14 +6,14 @@ import {
   getOpportunities, getOpportunity, createOpportunity, updateOpportunity, deleteOpportunity, getPipeline, createOpportunityErpDocs,
   getActivities, getLeadActivities, createActivity, createLeadActivity, updateActivity, completeActivity, cancelActivity, deleteActivity,
   getOrganizations, getOrganization, createOrganization, updateOrganization, deleteOrganization,
-  getCrmDashboard, getSavedViews, createSavedView, deleteSavedView,
+  getCrmDashboard, getSavedViews, createSavedView, updateSavedView, deleteSavedView,
   getAssignmentRules, createAssignmentRule, updateAssignmentRule, deleteAssignmentRule, testAssignmentRule,
   checkDuplicateLead, mergeLeads, assignLead, bulkAssignLeads, getLeadTimeline,
   createScopeRule, listScopeRules, deleteScopeRule, listLostReasons, createLostReason, updateLostReason,
   getCrmConfiguration, updateDefaultQueue,
   moveOpportunityStage, winOpportunity, loseOpportunity, opportunityHistory,
   myDay, overdueActivities, activityCalendar, addActivityAttendees, createDailyDigest,
-  listEmailTemplates, createEmailTemplate, sendCommunication, communicationThread, syncMailbox,
+  listEmailTemplates, createEmailTemplate, updateEmailTemplate, sendCommunication, communicationThread, syncMailbox,
   deleteEmailTemplate, revokeCaptureToken,
   listIntegrationAccounts, connectIntegrationAccount, disconnectIntegrationAccount,
   createCaptureToken, listCaptureTokens, captureLead, inboundCommunicationWebhook,
@@ -83,6 +83,7 @@ router.put('/activities/:id/cancel', cancelActivity);
 router.route('/activities/:id').put(updateActivity).delete(deleteActivity);
 
 router.route('/saved-views').get(getSavedViews).post(createSavedView);
+router.patch('/saved-views/:id', updateSavedView);
 router.delete('/saved-views/:id', deleteSavedView);
 
 router.route('/scope-rules').get(listScopeRules).post(createScopeRule);
@@ -92,6 +93,7 @@ router.put('/configuration/default-queue', updateDefaultQueue);
 router.route('/lost-reasons').get(listLostReasons).post(createLostReason);
 router.patch('/lost-reasons/:id', updateLostReason);
 router.route('/email-templates').get(listEmailTemplates).post(createEmailTemplate);
+router.patch('/email-templates/:id', updateEmailTemplate);
 router.delete('/email-templates/:id', deleteEmailTemplate);
 router.route('/communications').get(communicationThread).post(sendCommunication);
 router.post('/communications/sync', syncMailbox);
