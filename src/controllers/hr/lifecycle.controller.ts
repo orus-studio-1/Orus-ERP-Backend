@@ -109,6 +109,45 @@ export const updateLifecycleEventStatus = async (req: Request, res: Response) =>
   }
 };
 
+export const updateLifecycleEvent = async (req: Request, res: Response) => {
+  try {
+    const existing = await prisma.employeeLifecycleEvent.findUnique({ where: { id: req.params.id } });
+    if (!existing) return error(res, 'Lifecycle event not found', 404);
+    if (existing.status !== 'DRAFT') return error(res, 'Only draft lifecycle events can be edited', 400);
+
+    const { effectiveDate, newDepartmentId, newPositionId, newSalary, reason, notes } = req.body;
+    const item = await prisma.employeeLifecycleEvent.update({
+      where: { id: req.params.id },
+      data: {
+        ...(effectiveDate ? { effectiveDate: new Date(effectiveDate) } : {}),
+        ...(newDepartmentId !== undefined ? { newDepartmentId: cleanId(newDepartmentId) } : {}),
+        ...(newPositionId !== undefined ? { newPositionId: cleanId(newPositionId) } : {}),
+        ...(newSalary !== undefined ? { newSalary: newSalary ? Number(newSalary) : null } : {}),
+        ...(reason !== undefined ? { reason } : {}),
+        ...(notes !== undefined ? { notes } : {}),
+      },
+      include: { employee: { include: { user: { select: { firstName: true, lastName: true } }, department: true, position: true } } },
+    });
+    return success(res, item, 'Lifecycle event updated');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
+export const deleteLifecycleEvent = async (req: Request, res: Response) => {
+  try {
+    const existing = await prisma.employeeLifecycleEvent.findUnique({ where: { id: req.params.id } });
+    if (!existing) return error(res, 'Lifecycle event not found', 404);
+    if (existing.status !== 'DRAFT') return error(res, 'Only draft lifecycle events can be deleted', 400);
+
+    await prisma.employeeLifecycleEvent.delete({ where: { id: req.params.id } });
+    return success(res, null, 'Lifecycle event deleted');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
+
 export const getHrDashboard = async (req: Request, res: Response) => {
   try {
     const companyId = (req as any).user?.companyId || '__missing_company__';

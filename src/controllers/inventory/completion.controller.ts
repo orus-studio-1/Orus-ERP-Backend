@@ -159,6 +159,67 @@ export async function createTransferOrder(req: Request, res: Response) {
   } catch (e: any) { return error(res, e.message || 'Could not create transfer', 400); }
 }
 
+export async function updateTransferOrder(req: Request, res: Response) {
+  try {
+    const existing = await prisma.stockTransferOrder.findUnique({ where: { id: req.params.id } });
+    if (!existing) return error(res, 'Transfer order not found', 404);
+    if (existing.status !== 'DRAFT') return error(res, 'Only draft transfer orders can be updated', 400);
+
+    const { sourceWarehouseId, destinationWarehouseId, transitWarehouseId, transporter, vehicleNo, trackingReference, notes, items } = req.body;
+    const row = await prisma.$transaction(async (tx) => {
+      if (items && Array.isArray(items)) {
+        await tx.stockTransferOrderItem.deleteMany({ where: { transferOrderId: req.params.id } });
+      }
+      return tx.stockTransferOrder.update({
+        where: { id: req.params.id },
+        data: {
+          ...(sourceWarehouseId ? { sourceWarehouseId } : {}),
+          ...(destinationWarehouseId ? { destinationWarehouseId } : {}),
+          ...(transitWarehouseId !== undefined ? { transitWarehouseId: transitWarehouseId || null } : {}),
+          ...(transporter !== undefined ? { transporter } : {}),
+          ...(vehicleNo !== undefined ? { vehicleNo } : {}),
+          ...(trackingReference !== undefined ? { trackingReference } : {}),
+          ...(notes !== undefined ? { notes } : {}),
+          ...(items && Array.isArray(items)
+            ? {
+                items: {
+                  create: items.map((i: any) => ({
+                    productId: i.productId,
+                    quantity: new D(i.quantity),
+                    valuationRate: new D(i.valuationRate || 0),
+                    batchId: i.batchId,
+                    serialNoId: i.serialNoId,
+                  })),
+                },
+              }
+            : {}),
+        },
+        include: transferInclude,
+      });
+    });
+    return success(res, row, 'Transfer order updated');
+  } catch (e: any) {
+    return error(res, e.message || 'Could not update transfer order', 400);
+  }
+}
+
+export async function deleteTransferOrder(req: Request, res: Response) {
+  try {
+    const existing = await prisma.stockTransferOrder.findUnique({ where: { id: req.params.id } });
+    if (!existing) return error(res, 'Transfer order not found', 404);
+    if (existing.status !== 'DRAFT') return error(res, 'Only draft transfer orders can be deleted', 400);
+
+    await prisma.$transaction(async (tx) => {
+      await tx.stockTransferOrderItem.deleteMany({ where: { transferOrderId: req.params.id } });
+      await tx.stockTransferOrder.delete({ where: { id: req.params.id } });
+    });
+    return success(res, null, 'Transfer order deleted');
+  } catch (e: any) {
+    return handlePrismaError(res, e);
+  }
+}
+
+
 export async function listTransferOrders(req: Request, res: Response) {
   try { return success(res, await prisma.stockTransferOrder.findMany({ where: { ...(companyId(req) ? { companyId: companyId(req) } : {}), ...(req.query.status ? { status: req.query.status as any } : {}) }, include: transferInclude, orderBy: { createdAt: 'desc' } })); }
   catch (e) { return handlePrismaError(res, e); }

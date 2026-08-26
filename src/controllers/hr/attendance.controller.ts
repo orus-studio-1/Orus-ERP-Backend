@@ -68,3 +68,44 @@ export const markAttendance = async (req: Request, res: Response) => {
     return handlePrismaError(res, err);
   }
 };
+
+export const updateAttendance = async (req: Request, res: Response) => {
+  try {
+    const { status, checkIn, checkOut, notes } = req.body;
+    const existing = await prisma.attendance.findUnique({ where: { id: req.params.id } });
+    if (!existing) return error(res, 'Attendance record not found', 404);
+
+    const dateStr = existing.date.toISOString().slice(0, 10);
+    const checkInAt = checkIn !== undefined ? attendanceTime(dateStr, checkIn) : existing.checkIn;
+    const checkOutAt = checkOut !== undefined ? attendanceTime(dateStr, checkOut) : existing.checkOut;
+    const hoursWorked = checkInAt && checkOutAt
+      ? (new Date(checkOutAt).getTime() - new Date(checkInAt).getTime()) / 3600000
+      : existing.hoursWorked;
+
+    const item = await prisma.attendance.update({
+      where: { id: req.params.id },
+      data: {
+        ...(status ? { status } : {}),
+        checkIn: checkInAt,
+        checkOut: checkOutAt,
+        ...(notes !== undefined ? { notes } : {}),
+        hoursWorked,
+      },
+      include: { employee: { include: { user: { select: { firstName: true, lastName: true } } } } },
+    });
+    return success(res, item, 'Attendance record updated');
+  } catch (err: any) {
+    if (err.message?.includes('valid time')) return error(res, err.message, 400);
+    return handlePrismaError(res, err);
+  }
+};
+
+export const deleteAttendance = async (req: Request, res: Response) => {
+  try {
+    await prisma.attendance.delete({ where: { id: req.params.id } });
+    return success(res, null, 'Attendance record deleted');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
