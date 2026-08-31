@@ -42,6 +42,7 @@ import { processInventoryMonitoring } from './services/inventory/jobs';
 import { processProcurementMonitoring } from './services/procurement/jobs';
 
 const app = express();
+app.set('trust proxy', 1);
 
 app.use(helmet());
 
@@ -109,6 +110,7 @@ app.use(cookieParser());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(requestContext);
+app.use(mutationAudit);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/access', accessRoutes);
@@ -132,7 +134,6 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/notifications', notificationRoutes);
 
 // Versioned API is canonical. Legacy /api mounts remain during client migration.
-app.use('/api/v1', mutationAudit);
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/access', accessRoutes);
 app.use('/api/v1/accounting', accountingRoutes);
