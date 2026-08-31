@@ -16,6 +16,21 @@ describe('CRM normalization and import validation', () => {
     expect(validateLead(lead)).toBeNull();
   });
 
+  it('preserves camel-case names submitted by the lead form', () => {
+    const lead = normalizeLeadRow({
+      firstName: 'Asmit',
+      lastName: 'Shukla',
+      email: ' ASMIT@EXAMPLE.COM ',
+      tags: [' Priority ', 'Inbound'],
+    });
+
+    expect(lead.firstName).toBe('Asmit');
+    expect(lead.lastName).toBe('Shukla');
+    expect(lead.email).toBe('asmit@example.com');
+    expect(lead.tags).toEqual(['Priority', 'Inbound']);
+    expect(validateLead(lead)).toBeNull();
+  });
+
   it('calculates weighted opportunity line totals', () => {
     const result = calculateOpportunityItems([{ description: 'Service', quantity: 2, rate: 100, discount: 10, taxRate: 18 }]);
     expect(result.total).toBe(212.4);
