@@ -132,6 +132,9 @@ app.use('/api/customers', customersRoutes);
 app.use('/api/suppliers', suppliersRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/notifications', notificationRoutes);
+// Compatibility for clients configured with a legacy base URL ending in /api.
+// The canonical route remains /api/v1/platform.
+app.use('/api/platform', platformRoutes);
 
 // Versioned API is canonical. Legacy /api mounts remain during client migration.
 app.use('/api/v1/auth', authRoutes);
