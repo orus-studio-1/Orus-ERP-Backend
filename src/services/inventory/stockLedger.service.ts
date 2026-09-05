@@ -216,6 +216,8 @@ export async function postStockTransfer(tx: Tx, input: {
   voucherId?: string;
   voucherNo: string;
   remarks?: string;
+  batchId?: string;
+  serialNoId?: string;
 }) {
   await postStockLedger(tx, { ...input, warehouseId: input.fromWarehouseId, actualQty: new D(input.quantity).neg(), remarks: input.remarks || 'Material transfer out' });
   await postStockLedger(tx, { ...input, warehouseId: input.toWarehouseId, actualQty: input.quantity, remarks: input.remarks || 'Material transfer in' });

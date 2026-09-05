@@ -71,3 +71,7 @@ export const generateEmployeeId = (tx?: any) => allocateDocumentNo('EMPLOYEE', '
 export const generateJournalNo = (tx?: any) => allocateDocumentNo('JOURNAL_ENTRY', 'JE', 6, tx || prisma);
 export const generatePaymentNo = (tx?: any) => allocateDocumentNo('PAYMENT', 'PAY', 6, tx || prisma);
 export const generatePurchaseInvoiceNo = (tx?: any) => allocateDocumentNo('PURCHASE_INVOICE', 'PINV', 6, tx || prisma);
+export const generateBomNo = (tx?: any) => allocateDocumentNo('BOM', 'BOM', 6, tx || prisma);
+export const generateRoutingNo = (tx?: any) => allocateDocumentNo('ROUTING', 'RT', 6, tx || prisma);
+export const generateWorkOrderNo = (tx?: any) => allocateDocumentNo('WORK_ORDER', 'WO', 6, tx || prisma);
+export const generateJobCardNo = (tx?: any) => allocateDocumentNo('JOB_CARD', 'JC', 6, tx || prisma);

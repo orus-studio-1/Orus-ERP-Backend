@@ -1091,28 +1091,31 @@ model InventoryValuationLayer {
 }
 
 model StockReservation {
-  id               String                 @id @default(cuid())
+  id               String                  @id @default(cuid())
   companyId        String?
   productId        String
-  product          Product                @relation(fields: [productId], references: [id])
+  product          Product                 @relation(fields: [productId], references: [id])
   warehouseId      String
-  warehouse        Warehouse              @relation(fields: [warehouseId], references: [id])
-  salesOrderId     String
-  salesOrder       SalesOrder             @relation(fields: [salesOrderId], references: [id])
-  salesOrderItemId String
-  salesOrderItem   SalesOrderItem         @relation(fields: [salesOrderItemId], references: [id])
-  reservedQty      Decimal                @db.Decimal(18, 6)
-  fulfilledQty     Decimal                @default(0) @db.Decimal(18, 6)
-  status           StockReservationStatus @default(ACTIVE)
+  warehouse        Warehouse               @relation(fields: [warehouseId], references: [id])
+  salesOrderId     String?
+  salesOrder       SalesOrder?             @relation(fields: [salesOrderId], references: [id])
+  salesOrderItemId String?
+  salesOrderItem   SalesOrderItem?         @relation(fields: [salesOrderItemId], references: [id])
+  workOrderId      String?                 @db.Uuid
+  workOrder        ManufacturingWorkOrder? @relation(fields: [workOrderId], references: [id])
+  reservedQty      Decimal                 @db.Decimal(18, 6)
+  fulfilledQty     Decimal                 @default(0) @db.Decimal(18, 6)
+  status           StockReservationStatus  @default(ACTIVE)
   expiresAt        DateTime?
   releasedAt       DateTime?
   releaseReason    String?
-  createdAt        DateTime               @default(now())
-  updatedAt        DateTime               @updatedAt
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
 
   @@index([productId, warehouseId, status])
   @@index([salesOrderId])
   @@index([salesOrderItemId])
+  @@index([workOrderId])
   @@index([companyId])
 }
 
@@ -4989,19 +4992,493 @@ model WebhookSubscription {
 }
 
 model WebhookDelivery {
-  id             String               @id @default(uuid(7)) @db.Uuid
-  tenantId       String?              @db.Uuid
-  subscriptionId String               @db.Uuid
-  subscription   WebhookSubscription  @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  id             String              @id @default(uuid(7)) @db.Uuid
+  tenantId       String?             @db.Uuid
+  subscriptionId String              @db.Uuid
+  subscription   WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
   event          String
   payload        Json
-  status         String               @default("PENDING")
-  attempts       Int                  @default(0)
+  status         String              @default("PENDING")
+  attempts       Int                 @default(0)
   responseStatus Int?
   responseBody   String?
-  nextAttemptAt  DateTime             @default(now())
+  nextAttemptAt  DateTime            @default(now())
   deliveredAt    DateTime?
-  createdAt      DateTime             @default(now())
+  createdAt      DateTime            @default(now())
 
   @@index([tenantId, status, nextAttemptAt])
+}
+
+// ===================== MANUFACTURING / PRODUCTION =====================
+
+enum ManufacturingBomStatus {
+  DRAFT
+  PENDING_APPROVAL
+  ACTIVE
+  SUPERSEDED
+  OBSOLETE
+}
+
+enum ManufacturingBomType {
+  PRODUCTION
+  ENGINEERING
+  COSTING
+  PHANTOM
+}
+
+enum WorkCenterType {
+  MACHINE
+  ASSEMBLY
+  INSPECTION
+  MANUAL
+  SUBCONTRACT
+}
+
+enum MachineStatus {
+  RUNNING
+  IDLE
+  BREAKDOWN
+  MAINTENANCE
+  SETUP
+}
+
+enum ManufacturingInspectionStage {
+  NONE
+  FIRST_PIECE
+  IN_PROCESS
+  FINAL
+  PATROL
+}
+
+enum ManufacturingWorkOrderStatus {
+  DRAFT
+  NOT_STARTED
+  MATERIAL_PENDING
+  IN_PROGRESS
+  ON_HOLD
+  COMPLETED
+  CLOSED
+  CANCELLED
+}
+
+enum ManufacturingMaterialStatus {
+  NOT_ISSUED
+  PARTIALLY_ISSUED
+  FULLY_ISSUED
+}
+
+enum ManufacturingPriority {
+  URGENT
+  HIGH
+  NORMAL
+  LOW
+}
+
+enum WorkOrderOperationStatus {
+  PENDING
+  SETUP
+  RUNNING
+  PAUSED
+  COMPLETED
+  SKIPPED
+}
+
+enum JobCardStatus {
+  OPEN
+  IN_PROGRESS
+  PAUSED
+  COMPLETED
+  CANCELLED
+}
+
+enum JobCardActivityType {
+  SETUP
+  RUN
+  IDLE
+  BREAKDOWN
+  REWORK
+  BREAK
+}
+
+enum DowntimeCategory {
+  BREAKDOWN
+  SETUP
+  MATERIAL_SHORTAGE
+  POWER
+  TOOL_CHANGE
+  QUALITY
+  MANPOWER
+  PLANNED_MAINTENANCE
+  OTHER
+}
+
+model Bom {
+  id              String                 @id @default(uuid(7)) @db.Uuid
+  tenantId        String?                @db.Uuid
+  companyId       String
+  bomNumber       String
+  itemId          String
+  quantity        Decimal                @db.Decimal(18, 6)
+  uomId           String?
+  revisionNumber  Int                    @default(1)
+  revisionDate    DateTime               @default(now())
+  effectiveFrom   DateTime?
+  effectiveTo     DateTime?
+  status          ManufacturingBomStatus @default(DRAFT)
+  isDefault       Boolean                @default(false)
+  isActive        Boolean                @default(true)
+  supersedesId    String?                @db.Uuid
+  ecnId           String?
+  bomType         ManufacturingBomType   @default(PRODUCTION)
+  routingId       String?                @db.Uuid
+  projectQty      Decimal?               @db.Decimal(18, 6)
+  rawMaterialCost Decimal                @default(0) @db.Decimal(18, 4)
+  operatingCost   Decimal                @default(0) @db.Decimal(18, 4)
+  overheadCost    Decimal                @default(0) @db.Decimal(18, 4)
+  scrapValue      Decimal                @default(0) @db.Decimal(18, 4)
+  totalCost       Decimal                @default(0) @db.Decimal(18, 4)
+  approvedBy      String?
+  approvedAt      DateTime?
+  version         Int                    @default(1)
+  createdBy       String?
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+  items           BomItem[]
+  scrapItems      BomScrapItem[]
+  explosions      BomExplosion[]
+
+  @@unique([companyId, bomNumber, revisionNumber])
+  @@index([tenantId, companyId, itemId, status])
+  @@index([supersedesId])
+}
+
+model BomItem {
+  id                         String   @id @default(uuid(7)) @db.Uuid
+  bomId                      String   @db.Uuid
+  bom                        Bom      @relation(fields: [bomId], references: [id], onDelete: Cascade)
+  lineNumber                 Int
+  itemId                     String
+  qty                        Decimal  @db.Decimal(18, 6)
+  uomId                      String?
+  conversionFactor           Decimal  @default(1) @db.Decimal(18, 6)
+  stockQty                   Decimal  @db.Decimal(18, 6)
+  scrapPercent               Decimal  @default(0) @db.Decimal(9, 6)
+  wastagePercent             Decimal  @default(0) @db.Decimal(9, 6)
+  isSubcontracted            Boolean  @default(false)
+  sourceWarehouseId          String?
+  operationSequence          Int?
+  alternativeItemIds         String[] @default([])
+  rate                       Decimal  @default(0) @db.Decimal(18, 4)
+  amount                     Decimal  @default(0) @db.Decimal(18, 4)
+  includeInManufacturingCost Boolean  @default(true)
+  remarks                    String?
+  drawingAttachmentId        String?
+
+  @@unique([bomId, lineNumber])
+  @@index([itemId])
+}
+
+model BomScrapItem {
+  id     String  @id @default(uuid(7)) @db.Uuid
+  bomId  String  @db.Uuid
+  bom    Bom     @relation(fields: [bomId], references: [id], onDelete: Cascade)
+  itemId String
+  qty    Decimal @db.Decimal(18, 6)
+  uomId  String?
+  rate   Decimal @default(0) @db.Decimal(18, 4)
+  amount Decimal @default(0) @db.Decimal(18, 4)
+}
+
+model BomExplosion {
+  id            String  @id @default(uuid(7)) @db.Uuid
+  bomId         String  @db.Uuid
+  bom           Bom     @relation(fields: [bomId], references: [id], onDelete: Cascade)
+  level         Int
+  itemId        String
+  parentItemId  String?
+  qtyPerUnit    Decimal @db.Decimal(18, 6)
+  cumulativeQty Decimal @db.Decimal(18, 6)
+  lowLevelCode  Int
+  path          String
+
+  @@index([bomId, level])
+  @@index([itemId])
+}
+
+model WorkCenter {
+  id                String         @id @default(uuid(7)) @db.Uuid
+  tenantId          String?        @db.Uuid
+  companyId         String
+  code              String
+  name              String
+  plantId           String?
+  departmentId      String?
+  workCenterType    WorkCenterType
+  capacityPerHour   Decimal        @db.Decimal(18, 6)
+  capacityUom       String?
+  efficiencyPercent Decimal        @default(100) @db.Decimal(9, 6)
+  hourlyRate        Decimal        @default(0) @db.Decimal(18, 4)
+  setupRate         Decimal        @default(0) @db.Decimal(18, 4)
+  overheadRate      Decimal        @default(0) @db.Decimal(18, 4)
+  shiftIds          String[]       @default([])
+  holidayCalendarId String?
+  isActive          Boolean        @default(true)
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  @@unique([companyId, code])
+  @@index([tenantId, companyId, isActive])
+}
+
+model Machine {
+  id                  String        @id @default(uuid(7)) @db.Uuid
+  tenantId            String?       @db.Uuid
+  companyId           String
+  machineCode         String
+  machineName         String
+  workCenterId        String        @db.Uuid
+  machineType         String?
+  make                String?
+  model               String?
+  serialNumber        String?
+  installationDate    DateTime?
+  capacityPerHour     Decimal       @db.Decimal(18, 6)
+  status              MachineStatus @default(IDLE)
+  lastMaintenanceDate DateTime?
+  nextMaintenanceDate DateTime?
+  isActive            Boolean       @default(true)
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  @@unique([companyId, machineCode])
+  @@index([workCenterId, status])
+}
+
+model ManufacturingOperation {
+  id                   String   @id @default(uuid(7)) @db.Uuid
+  tenantId             String?  @db.Uuid
+  companyId            String
+  operationCode        String
+  operationName        String
+  defaultWorkCenterId  String?  @db.Uuid
+  description          String?
+  isInspectionRequired Boolean  @default(false)
+  isOutsourced         Boolean  @default(false)
+  isActive             Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@unique([companyId, operationCode])
+}
+
+model Routing {
+  id             String                 @id @default(uuid(7)) @db.Uuid
+  tenantId       String?                @db.Uuid
+  companyId      String
+  routingNumber  String
+  itemId         String
+  bomId          String?                @db.Uuid
+  revisionNumber Int                    @default(1)
+  status         ManufacturingBomStatus @default(DRAFT)
+  effectiveFrom  DateTime?
+  isDefault      Boolean                @default(false)
+  version        Int                    @default(1)
+  createdBy      String?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+  operations     RoutingOperation[]
+
+  @@unique([companyId, routingNumber, revisionNumber])
+  @@index([itemId, status])
+}
+
+model RoutingOperation {
+  id                          String                       @id @default(uuid(7)) @db.Uuid
+  routingId                   String                       @db.Uuid
+  routing                     Routing                      @relation(fields: [routingId], references: [id], onDelete: Cascade)
+  sequence                    Int
+  operationId                 String                       @db.Uuid
+  workCenterId                String                       @db.Uuid
+  machineId                   String?                      @db.Uuid
+  description                 String?
+  setupTimeMinutes            Decimal                      @default(0) @db.Decimal(18, 6)
+  cycleTimeMinutes            Decimal                      @default(0) @db.Decimal(18, 6)
+  moveTimeMinutes             Decimal                      @default(0) @db.Decimal(18, 6)
+  queueTimeMinutes            Decimal                      @default(0) @db.Decimal(18, 6)
+  batchSize                   Decimal                      @default(1) @db.Decimal(18, 6)
+  operatorsRequired           Int                          @default(1)
+  skillRequired               String?
+  inspectionStage             ManufacturingInspectionStage @default(NONE)
+  qualityTemplateId           String?
+  isOutsourced                Boolean                      @default(false)
+  subcontractVendorId         String?
+  subcontractRate             Decimal                      @default(0) @db.Decimal(18, 4)
+  drawingAttachmentId         String?
+  workInstructionAttachmentId String?
+
+  @@unique([routingId, sequence])
+}
+
+model DowntimeReason {
+  id          String           @id @default(uuid(7)) @db.Uuid
+  tenantId    String?          @db.Uuid
+  companyId   String
+  code        String
+  description String
+  category    DowntimeCategory
+  isActive    Boolean          @default(true)
+
+  @@unique([companyId, code])
+}
+
+model ManufacturingWorkOrder {
+  id                String                            @id @default(uuid(7)) @db.Uuid
+  tenantId          String?                           @db.Uuid
+  companyId         String
+  woNumber          String
+  woDate            DateTime                          @default(now())
+  itemId            String
+  bomId             String                            @db.Uuid
+  routingId         String                            @db.Uuid
+  salesOrderId      String?
+  salesOrderItemId  String?
+  productionPlanId  String?
+  qtyToProduce      Decimal                           @db.Decimal(18, 6)
+  producedQty       Decimal                           @default(0) @db.Decimal(18, 6)
+  scrapQty          Decimal                           @default(0) @db.Decimal(18, 6)
+  rejectedQty       Decimal                           @default(0) @db.Decimal(18, 6)
+  pendingQty        Decimal                           @db.Decimal(18, 6)
+  uomId             String?
+  warehouseId       String
+  wipWarehouseId    String
+  sourceWarehouseId String
+  plannedStartDate  DateTime?
+  plannedEndDate    DateTime?
+  actualStartDate   DateTime?
+  actualEndDate     DateTime?
+  priority          ManufacturingPriority             @default(NORMAL)
+  status            ManufacturingWorkOrderStatus      @default(DRAFT)
+  materialStatus    ManufacturingMaterialStatus       @default(NOT_ISSUED)
+  plannedCost       Decimal                           @default(0) @db.Decimal(18, 4)
+  actualCost        Decimal                           @default(0) @db.Decimal(18, 4)
+  costVariance      Decimal                           @default(0) @db.Decimal(18, 4)
+  customerId        String?
+  customerPoNumber  String?
+  remarks           String?
+  bomSnapshot       Json?
+  routingSnapshot   Json?
+  holdReason        String?
+  closedAt          DateTime?
+  cancelledAt       DateTime?
+  version           Int                               @default(1)
+  createdBy         String?
+  createdAt         DateTime                          @default(now())
+  updatedAt         DateTime                          @updatedAt
+  requiredItems     ManufacturingWorkOrderItem[]
+  operations        ManufacturingWorkOrderOperation[]
+  jobCards          JobCard[]
+  stockReservations StockReservation[]
+
+  @@unique([companyId, woNumber])
+  @@index([tenantId, companyId, status])
+  @@index([salesOrderId])
+}
+
+model ManufacturingWorkOrderItem {
+  id                String                 @id @default(uuid(7)) @db.Uuid
+  workOrderId       String                 @db.Uuid
+  workOrder         ManufacturingWorkOrder @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  itemId            String
+  requiredQty       Decimal                @db.Decimal(18, 6)
+  issuedQty         Decimal                @default(0) @db.Decimal(18, 6)
+  consumedQty       Decimal                @default(0) @db.Decimal(18, 6)
+  returnedQty       Decimal                @default(0) @db.Decimal(18, 6)
+  uomId             String?
+  sourceWarehouseId String
+  availableQty      Decimal                @default(0) @db.Decimal(18, 6)
+  shortageQty       Decimal                @default(0) @db.Decimal(18, 6)
+  rate              Decimal                @default(0) @db.Decimal(18, 4)
+  batchId           String?
+  serialNoId        String?
+
+  @@unique([workOrderId, itemId, sourceWarehouseId])
+}
+
+model ManufacturingWorkOrderOperation {
+  id              String                       @id @default(uuid(7)) @db.Uuid
+  workOrderId     String                       @db.Uuid
+  workOrder       ManufacturingWorkOrder       @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  sequence        Int
+  operationId     String                       @db.Uuid
+  workCenterId    String                       @db.Uuid
+  machineId       String?                      @db.Uuid
+  plannedStartAt  DateTime?
+  plannedEndAt    DateTime?
+  actualStartAt   DateTime?
+  actualEndAt     DateTime?
+  plannedQty      Decimal                      @db.Decimal(18, 6)
+  completedQty    Decimal                      @default(0) @db.Decimal(18, 6)
+  rejectedQty     Decimal                      @default(0) @db.Decimal(18, 6)
+  reworkQty       Decimal                      @default(0) @db.Decimal(18, 6)
+  scrapQty        Decimal                      @default(0) @db.Decimal(18, 6)
+  setupTimeActual Decimal                      @default(0) @db.Decimal(18, 6)
+  runTimeActual   Decimal                      @default(0) @db.Decimal(18, 6)
+  downtimeMinutes Decimal                      @default(0) @db.Decimal(18, 6)
+  status          WorkOrderOperationStatus     @default(PENDING)
+  operatorIds     String[]                     @default([])
+  inspectionStage ManufacturingInspectionStage @default(NONE)
+  jobCard         JobCard?
+
+  @@unique([workOrderId, sequence])
+}
+
+model JobCard {
+  id                   String                          @id @default(uuid(7)) @db.Uuid
+  tenantId             String?                         @db.Uuid
+  companyId            String
+  jobCardNumber        String
+  workOrderId          String                          @db.Uuid
+  workOrder            ManufacturingWorkOrder          @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  workOrderOperationId String                          @unique @db.Uuid
+  workOrderOperation   ManufacturingWorkOrderOperation @relation(fields: [workOrderOperationId], references: [id], onDelete: Cascade)
+  operationId          String                          @db.Uuid
+  workCenterId         String                          @db.Uuid
+  machineId            String?                         @db.Uuid
+  shiftId              String?
+  plannedQty           Decimal                         @db.Decimal(18, 6)
+  completedQty         Decimal                         @default(0) @db.Decimal(18, 6)
+  rejectedQty          Decimal                         @default(0) @db.Decimal(18, 6)
+  reworkQty            Decimal                         @default(0) @db.Decimal(18, 6)
+  scrapQty             Decimal                         @default(0) @db.Decimal(18, 6)
+  startedAt            DateTime?
+  completedAt          DateTime?
+  totalTimeMinutes     Decimal                         @default(0) @db.Decimal(18, 6)
+  operatorIds          String[]                        @default([])
+  supervisorId         String?
+  status               JobCardStatus                   @default(OPEN)
+  firstPieceApprovedAt DateTime?
+  remarks              String?
+  version              Int                             @default(1)
+  createdAt            DateTime                        @default(now())
+  updatedAt            DateTime                        @updatedAt
+  timeLogs             JobCardTimeLog[]
+
+  @@unique([companyId, jobCardNumber])
+  @@index([tenantId, companyId, status])
+  @@index([machineId, status])
+}
+
+model JobCardTimeLog {
+  id               String              @id @default(uuid(7)) @db.Uuid
+  jobCardId        String              @db.Uuid
+  jobCard          JobCard             @relation(fields: [jobCardId], references: [id], onDelete: Cascade)
+  fromTime         DateTime
+  toTime           DateTime?
+  activityType     JobCardActivityType
+  completedQty     Decimal             @default(0) @db.Decimal(18, 6)
+  operatorId       String?
+  downtimeReasonId String?             @db.Uuid
+  remarks          String?
+
+  @@index([jobCardId, fromTime])
 }

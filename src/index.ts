@@ -32,6 +32,7 @@ import dashboardRoutes from './routes/dashboard.routes';
 import accessRoutes from './routes/access.routes';
 import notificationRoutes from './routes/notifications.routes';
 import platformRoutes from './routes/platform.routes';
+import manufacturingRoutes from './routes/manufacturing.routes';
 import { idempotency, mutationAudit, requestContext } from './middleware/platform';
 import { runDueSubscriptionsJob } from './controllers/invoicingExtras.controller';
 import prisma from './lib/prisma';
@@ -135,6 +136,7 @@ app.use('/api/notifications', notificationRoutes);
 // Compatibility for clients configured with a legacy base URL ending in /api.
 // The canonical route remains /api/v1/platform.
 app.use('/api/platform', platformRoutes);
+app.use('/api/manufacturing', manufacturingRoutes);
 
 // Versioned API is canonical. Legacy /api mounts remain during client migration.
 app.use('/api/v1/auth', authRoutes);
@@ -158,6 +160,7 @@ app.use('/api/v1/suppliers', suppliersRoutes);
 app.use('/api/v1/dashboard', dashboardRoutes);
 app.use('/api/v1/notifications', notificationRoutes);
 app.use('/api/v1/platform', platformRoutes);
+app.use('/api/v1/manufacturing', manufacturingRoutes);
 
 app.get('/health', (req, res) => {
   prisma.$queryRaw`SELECT 1`

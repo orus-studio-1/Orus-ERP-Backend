@@ -70,22 +70,83 @@ export const listAudit = async (req: Request, res: Response) => {
   const action = String(req.query.action || '').trim().toUpperCase();
   const userId = String(req.query.userId || '').trim();
   const entityId = String(req.query.entityId || '').trim();
+  const source = String(req.query.source || '').trim().toUpperCase();
+  const search = String(req.query.search || '').trim();
   const from = req.query.from ? new Date(String(req.query.from)) : undefined;
   const to = req.query.to ? new Date(`${String(req.query.to).slice(0, 10)}T23:59:59.999Z`) : undefined;
-  const where: any = {
+  const createdAt = from || to ? { ...(from && !Number.isNaN(from.getTime()) ? { gte: from } : {}), ...(to && !Number.isNaN(to.getTime()) ? { lte: to } : {}) } : undefined;
+  const platformWhere: any = {
     tenantId: tenant(req),
     companyId,
-    ...(moduleName ? { OR: [{ entityType: { startsWith: `${moduleName}:` } }, { entityType: moduleName.toLowerCase() }] } : {}),
     ...(action ? { action } : {}),
     ...(userId ? { userId } : {}),
     ...(entityId ? { entityId } : {}),
-    ...(from || to ? { createdAt: { ...(from && !Number.isNaN(from.getTime()) ? { gte: from } : {}), ...(to && !Number.isNaN(to.getTime()) ? { lte: to } : {}) } } : {}),
+    ...(createdAt ? { createdAt } : {}),
+    ...((moduleName || search) ? { AND: [
+      ...(moduleName ? [{ OR: [{ entityType: { startsWith: `${moduleName}:` } }, { entityType: moduleName.toLowerCase() }] }] : []),
+      ...(search ? [{ OR: [
+        { entityType: { contains: search, mode: 'insensitive' } },
+        { entityId: { contains: search, mode: 'insensitive' } },
+        { action: { contains: search, mode: 'insensitive' } },
+      ] }] : []),
+    ] } : {}),
   };
-  const [items, total, users] = await Promise.all([
-    prisma.platformAuditLog.findMany({ where, skip: (page - 1) * limit, take: limit, orderBy: { createdAt: 'desc' } }),
-    prisma.platformAuditLog.count({ where }),
+  const documentWhere: any = {
+    companyId,
+    ...(moduleName && moduleName !== 'INVOICING' ? { id: '__no_match__' } : {}),
+    ...(action ? { action } : {}),
+    ...(userId ? { actorId: userId } : {}),
+    ...(entityId ? { entityId } : {}),
+    ...(createdAt ? { createdAt } : {}),
+    ...(search ? { OR: [
+      { message: { contains: search, mode: 'insensitive' } },
+      { actorEmail: { contains: search, mode: 'insensitive' } },
+      { entityId: { contains: search, mode: 'insensitive' } },
+      { action: { contains: search, mode: 'insensitive' } },
+    ] } : {}),
+  };
+  const accessWhere: any = {
+    companyId,
+    ...(moduleName && moduleName !== 'ACCESS' ? { id: '__no_match__' } : {}),
+    ...(action ? { action } : {}),
+    ...(userId ? { actorId: userId } : {}),
+    ...(entityId ? { OR: [{ targetUserId: entityId }, { targetRoleId: entityId }] } : {}),
+    ...(createdAt ? { createdAt } : {}),
+    ...(search ? { OR: [
+      { message: { contains: search, mode: 'insensitive' } },
+      { action: { contains: search, mode: 'insensitive' } },
+      { targetUserId: { contains: search, mode: 'insensitive' } },
+      { targetRoleId: { contains: search, mode: 'insensitive' } },
+    ] } : {}),
+  };
+  const includePlatform = !source || source === 'WORKSPACE';
+  const includeDocuments = !source || source === 'DOCUMENT';
+  const includeAccess = !source || source === 'ACCESS';
+  const candidateLimit = page * limit;
+  const [platformItems, documentItems, accessItems, platformTotal, documentTotal, accessTotal, users] = await Promise.all([
+    includePlatform ? prisma.platformAuditLog.findMany({ where: platformWhere, take: candidateLimit, orderBy: { createdAt: 'desc' } }) : [],
+    includeDocuments ? prisma.auditLog.findMany({ where: documentWhere, take: candidateLimit, orderBy: { createdAt: 'desc' } }) : [],
+    includeAccess ? prisma.accessAuditLog.findMany({ where: accessWhere, take: candidateLimit, orderBy: { createdAt: 'desc' } }) : [],
+    includePlatform ? prisma.platformAuditLog.count({ where: platformWhere }) : 0,
+    includeDocuments ? prisma.auditLog.count({ where: documentWhere }) : 0,
+    includeAccess ? prisma.accessAuditLog.count({ where: accessWhere }) : 0,
     prisma.user.findMany({ where: { companyId: companyId || undefined }, select: { id: true, firstName: true, lastName: true, email: true, role: true, employee: { select: { employeeId: true } } }, orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }] }),
   ]);
   const actors = new Map(users.map(user => [user.id, user]));
-  return success(res, { items: items.map(item => ({ ...item, actor: item.userId ? actors.get(item.userId) || null : null })), total, page, limit, totalPages: Math.ceil(total / limit), users });
+  const items = [
+    ...platformItems.map(item => ({ ...item, source: 'WORKSPACE', actor: item.userId ? actors.get(item.userId) || null : null })),
+    ...documentItems.map(item => ({
+      id: item.id, source: 'DOCUMENT', entityType: `INVOICING:${item.entityType}`, entityId: item.entityId, action: item.action,
+      before: item.statusBefore ? { status: item.statusBefore } : null, after: item.statusAfter ? { status: item.statusAfter } : null,
+      diff: item.diff, message: item.message, createdAt: item.createdAt,
+      actor: item.actorId ? actors.get(item.actorId) || { id: item.actorId, email: item.actorEmail, role: item.actorRole } : item.actorEmail ? { email: item.actorEmail, role: item.actorRole } : null,
+    })),
+    ...accessItems.map(item => ({
+      id: item.id, source: 'ACCESS', entityType: `ACCESS:${item.targetUserId ? 'USER' : item.targetRoleId ? 'ROLE' : 'SETTINGS'}`,
+      entityId: item.targetUserId || item.targetRoleId, action: item.action, before: item.before, after: item.after,
+      diff: null, message: item.message, createdAt: item.createdAt, actor: item.actorId ? actors.get(item.actorId) || null : null,
+    })),
+  ].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).slice((page - 1) * limit, page * limit);
+  const total = platformTotal + documentTotal + accessTotal;
+  return success(res, { items, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)), users });
 };

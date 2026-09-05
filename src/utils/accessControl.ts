@@ -34,6 +34,7 @@ export const ERP_MODULES = [
   { module: 'sales', label: 'Sales', resources: ['quotations', 'sales-orders'], actions: ['READ', 'CREATE', 'WRITE', 'DELETE', 'SUBMIT', 'CANCEL', 'AMEND', 'APPROVE', 'PRINT', 'EXPORT'] },
   { module: 'invoicing', label: 'Invoicing', resources: ['sales-invoices', 'payments', 'payment-entries', 'delivery-notes', 'credit-notes', 'tax-templates', 'ledger', 'print-formats', 'subscriptions', 'reports', 'audit-log'], actions: ['READ', 'CREATE', 'WRITE', 'DELETE', 'SUBMIT', 'CANCEL', 'AMEND', 'APPROVE', 'PRINT', 'REPORT', 'EXPORT'] },
   { module: 'procurement', label: 'Procurement', resources: ['dashboard', 'settings', 'payment-terms', 'supplier-items', 'material-requests', 'rfqs', 'supplier-quotations', 'blanket-purchase-orders', 'purchase-orders', 'purchase-receipts', 'quality-inspections', 'landed-cost-vouchers', 'purchase-invoices', 'supplier-payments', 'tracker', 'communications'], actions: ['READ', 'CREATE', 'WRITE', 'DELETE', 'SUBMIT', 'CANCEL', 'APPROVE', 'PRINT', 'REPORT', 'EXPORT', 'MANAGE'] },
+  { module: 'manufacturing', label: 'Manufacturing', resources: ['boms', 'routings', 'work-centers', 'machines', 'operations', 'downtime-reasons', 'work-orders', 'job-cards', 'shopfloor', 'reports'], actions: ['READ', 'CREATE', 'WRITE', 'DELETE', 'SUBMIT', 'CANCEL', 'AMEND', 'APPROVE', 'REPORT', 'EXPORT', 'MANAGE'] },
   { module: 'projects', label: 'Projects', resources: ['projects', 'tasks', 'milestones', 'comments', 'members'], actions: ['READ', 'CREATE', 'WRITE', 'DELETE', 'APPROVE', 'REPORT', 'EXPORT'] },
   { module: 'customers', label: 'Customers', resources: ['customers'], actions: ['READ', 'CREATE', 'WRITE', 'DELETE', 'REPORT', 'EXPORT', 'IMPORT'] },
   { module: 'suppliers', label: 'Suppliers', resources: ['suppliers'], actions: ['READ', 'CREATE', 'WRITE', 'DELETE', 'REPORT', 'EXPORT', 'IMPORT'] },
@@ -99,11 +100,11 @@ export async function ensureSystemPermissions(tx: any = prisma) {
 
 const DEFAULT_ROLE_RULES: Record<string, { title: string; modules: string[]; actions?: string[]; super?: boolean }> = {
   SUPER_ADMIN: { title: 'Super Admin', modules: ['*'], super: true },
-  ADMIN: { title: 'Admin', modules: ['dashboard', 'company', 'access', 'accounting', 'inventory', 'hr', 'crm', 'sales', 'invoicing', 'procurement', 'projects', 'customers', 'suppliers'] },
+  ADMIN: { title: 'Admin', modules: ['dashboard', 'company', 'access', 'accounting', 'inventory', 'hr', 'crm', 'sales', 'invoicing', 'procurement', 'manufacturing', 'projects', 'customers', 'suppliers'] },
   HR_MANAGER: { title: 'HR Manager', modules: ['dashboard', 'hr'], actions: ['READ', 'CREATE', 'WRITE', 'APPROVE', 'SUBMIT', 'REPORT', 'EXPORT', 'MANAGE'] },
   ACCOUNTANT: { title: 'Accountant', modules: ['dashboard', 'accounting', 'invoicing', 'customers'], actions: ['READ', 'CREATE', 'WRITE', 'SUBMIT', 'CANCEL', 'REPORT', 'PRINT', 'EXPORT'] },
   SALES_MANAGER: { title: 'Sales Manager', modules: ['dashboard', 'sales', 'invoicing', 'customers', 'crm'], actions: ['READ', 'CREATE', 'WRITE', 'SUBMIT', 'REPORT', 'PRINT', 'EXPORT'] },
-  INVENTORY_MANAGER: { title: 'Inventory Manager', modules: ['dashboard', 'inventory', 'suppliers', 'procurement'], actions: ['READ', 'CREATE', 'WRITE', 'DELETE', 'SUBMIT', 'REPORT', 'EXPORT', 'IMPORT'] },
+  INVENTORY_MANAGER: { title: 'Inventory Manager', modules: ['dashboard', 'inventory', 'suppliers', 'procurement', 'manufacturing'], actions: ['READ', 'CREATE', 'WRITE', 'DELETE', 'SUBMIT', 'REPORT', 'EXPORT', 'IMPORT'] },
   PROJECT_MANAGER: { title: 'Project Manager', modules: ['dashboard', 'projects'], actions: ['READ', 'CREATE', 'WRITE', 'DELETE', 'APPROVE', 'REPORT'] },
   EMPLOYEE_SELF_SERVICE: { title: 'Employee Self Service', modules: ['dashboard'], actions: ['READ'] },
 };
