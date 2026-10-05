@@ -67,9 +67,14 @@ function parseAuditPath(rawPath: string, method: string) {
   const rootResource = ['customers', 'suppliers', 'projects', 'invoices', 'delivery-notes'].includes(moduleName);
   const resource = rootResource ? 'request' : pathParts[1] || 'request';
   const candidateId = pathParts[rootResource ? 1 : 2];
-  const operation = pathParts[rootResource ? 2 : 3]?.toLowerCase();
-  const pathEntityId = ['PUT', 'PATCH', 'DELETE'].includes(method) || (method === 'POST' && operation && documentOperations.has(operation)) ? candidateId : undefined;
-  return { moduleName, resource, pathEntityId };
+  // A POST is an action on an existing record only when it has exactly the shape
+  // /module/resource/:id/<verb> (or /module/:id/<verb> for root resources). A collection-level
+  // POST such as /module/resource/start or /module/resource/:id/items/status is a plain create.
+  const operationIndex = rootResource ? 2 : 3;
+  const candidateOperation = pathParts.length === operationIndex + 1 ? pathParts[operationIndex].toLowerCase() : undefined;
+  const operation = candidateOperation && documentOperations.has(candidateOperation) ? candidateOperation : undefined;
+  const pathEntityId = ['PUT', 'PATCH', 'DELETE'].includes(method) || (method === 'POST' && operation) ? candidateId : undefined;
+  return { moduleName, resource, pathEntityId, operation: method === 'POST' ? operation : undefined };
 }
 
 // Called by authenticate() once the user is verified and the tenant context is active, so the
@@ -155,9 +160,8 @@ function sanitizeAuditValue(value: any, depth = 0): any {
 }
 
 function auditAction(req: Request) {
-  const segments = req.path.split('/').filter(Boolean);
-  const lastSegment = segments[segments.length - 1]?.toLowerCase();
-  if (req.method === 'POST' && lastSegment && documentOperations.has(lastSegment)) return lastSegment.toUpperCase().replace(/-/g, '_');
+  const { operation } = parseAuditPath(req.originalUrl || req.path, req.method);
+  if (operation) return operation.toUpperCase().replace(/-/g, '_');
   return req.method === 'POST' ? 'CREATE' : req.method === 'DELETE' ? 'DELETE' : 'UPDATE';
 }
 
@@ -332,20 +336,29 @@ export async function mutationAudit(req: AuthRequest, res: Response, next: NextF
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`audit write timed out after ${ms}ms`)), ms);
+    const timer = setTimeout(() => reject(Object.assign(new Error(`audit write timed out after ${ms}ms`), { isAuditTimeout: true })), ms);
     promise.then((value) => { clearTimeout(timer); resolve(value); }, (err) => { clearTimeout(timer); reject(err); });
   });
 }
 
-// Each attempt is bounded by AUDIT_WRITE_TIMEOUT_MS so a stalled database cannot hang every mutation
-// response. Rows get their ids up front and are inserted with skipDuplicates, so retrying after a
-// timeout (where the first insert may still complete) can never store the same event twice.
+// AUDIT_WRITE_TIMEOUT_MS is the total time a response may wait for its audit rows (default 3s), not
+// per attempt. A quick failure is retried once inside that budget; a timeout is not retried, because
+// a database that is already stalled or out of connections would only be hit again and every write
+// endpoint would wait twice as long. Rows get their ids up front and are inserted with
+// skipDuplicates, so a retry (or a first insert that still completes after the timeout) can never
+// store the same event twice.
 async function writeAuditRows(rows: Record<string, any>[]) {
-  const timeoutMs = Number(process.env.AUDIT_WRITE_TIMEOUT_MS) || 4000;
+  const budgetMs = Number(process.env.AUDIT_WRITE_TIMEOUT_MS) || 3000;
+  const deadline = Date.now() + budgetMs;
   const data = rows.map((row) => ({ id: crypto.randomUUID(), ...row }));
   for (let attempt = 1; attempt <= 2; attempt++) {
-    try { await withTimeout(prisma.platformAuditLog.createMany({ data: data as any, skipDuplicates: true }), timeoutMs); return true; }
-    catch (err) { if (attempt === 2) console.error('AUDIT WRITE FAILED - rows for manual recovery:', err, JSON.stringify(data)); }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    try { await withTimeout(prisma.platformAuditLog.createMany({ data: data as any, skipDuplicates: true }), remaining); return true; }
+    catch (err) {
+      if (attempt === 2 || (err as any)?.isAuditTimeout) { console.error('AUDIT WRITE FAILED - rows for manual recovery:', err, JSON.stringify(data)); return false; }
+    }
   }
+  console.error('AUDIT WRITE FAILED - rows for manual recovery: no time left in the write budget', JSON.stringify(data));
   return false;
 }

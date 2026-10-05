@@ -165,7 +165,20 @@ describe('audit write durability', () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     store.createMany.mockImplementation(() => new Promise(() => undefined));
     const { headers } = await run('POST', '/api/v1/hr/leave-types', { user });
-    expect(store.createMany).toHaveBeenCalledTimes(2);
+    // A timeout is not retried: the whole wait is capped by the budget, not multiplied by the retry.
+    expect(store.createMany).toHaveBeenCalledTimes(1);
+    expect(headers['X-Audit-Warning']).toBe('write-failed');
+    log.mockRestore();
+    delete process.env.AUDIT_WRITE_TIMEOUT_MS;
+  });
+
+  it('never makes the response wait longer than the budget even when attempts fail slowly', async () => {
+    process.env.AUDIT_WRITE_TIMEOUT_MS = '120';
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    store.createMany.mockImplementation(() => new Promise((_, reject) => setTimeout(() => reject(new Error('slow failure')), 80)));
+    const started = Date.now();
+    const { headers } = await run('POST', '/api/v1/hr/leave-types', { user });
+    expect(Date.now() - started).toBeLessThan(400);
     expect(headers['X-Audit-Warning']).toBe('write-failed');
     log.mockRestore();
     delete process.env.AUDIT_WRITE_TIMEOUT_MS;
@@ -266,6 +279,31 @@ describe('idempotency replay', () => {
     await idempotency(req, res, () => undefined);
     await vi.waitFor(() => expect(sent).toBe(true));
     expect(store.createMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('action names and record ids come from the path shape', () => {
+  it('treats /module/resource/:id/<verb> as an action on that record', async () => {
+    const { rows } = await run('POST', '/api/v1/manufacturing/work-orders/w1/start', { user });
+    expect(rows[0]).toMatchObject({ action: 'START', entityId: 'w1' });
+  });
+
+  it('treats a collection-level POST that ends in a verb as a plain create', async () => {
+    const { rows } = await run('POST', '/api/v1/manufacturing/work-orders/start', { user });
+    expect(rows[0].action).toBe('CREATE');
+  });
+
+  it('does not treat a verb deeper in the path as the record action', async () => {
+    const { rows } = await run('POST', '/api/v1/hr/employees/e1/documents/status', { user });
+    expect(rows[0].action).toBe('CREATE');
+  });
+
+  it('takes no snapshot for a collection-level POST named like a verb', async () => {
+    store.lookups.length = 0;
+    const req: any = { method: 'POST', originalUrl: '/api/v1/hr/leave-types/status', params: {}, body: {}, headers: {}, user, get: () => 'ua' };
+    await captureBeforeSnapshot(req);
+    expect(store.lookups).toEqual([]);
+    expect(req.auditBefore).toBeUndefined();
   });
 });
 
