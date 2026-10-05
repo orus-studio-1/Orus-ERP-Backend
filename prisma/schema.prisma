@@ -4807,6 +4807,8 @@ model PlatformAuditLog {
   companyId  String?
   branchId   String?  @db.Uuid
   userId     String?
+  actorEmail String?
+  actorRole  String?
   entityType String
   entityId   String?
   action     String

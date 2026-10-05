@@ -4,12 +4,17 @@ const store = vi.hoisted(() => ({
   rows: [] as any[],
   lookups: [] as any[],
   createMany: vi.fn(),
+  committed: new Set<string>(),
+  countFails: false,
   idempotencyRecord: { findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
 }));
 
 vi.mock('../lib/prisma', () => ({
   default: {
-    platformAuditLog: { createMany: store.createMany },
+    platformAuditLog: {
+      createMany: store.createMany,
+      count: vi.fn(async ({ where }: any) => { if (store.countFails) throw new Error('db down'); return where.id.in.filter((id: string) => store.committed.has(id)).length; }),
+    },
     idempotencyRecord: store.idempotencyRecord,
     leaveType: { findUnique: vi.fn(), findFirst: vi.fn(async ({ where }: any) => { store.lookups.push(where.id); return { id: where.id, name: 'OLD', parentHash: 'h', pan: 'ABCDE1234F', panAvailable: true, company: 'Acme' }; }) },
     journalEntry: { findUnique: vi.fn(), findFirst: vi.fn() },
@@ -42,6 +47,8 @@ const user = { id: 'u1', tenantId: T1, companyId: 'c1' };
 beforeEach(() => {
   store.rows = [];
   store.lookups = [];
+  store.committed = new Set();
+  store.countFails = false;
   store.createMany.mockReset();
   store.createMany.mockImplementation(async ({ data }: any) => { store.rows.push(...data); return {}; });
 });
@@ -262,15 +269,24 @@ describe('idempotency replay', () => {
   });
 });
 
+describe('actor snapshot', () => {
+  it('stores the actor email and role on the row so they survive the user being deleted', async () => {
+    const { rows } = await run('PUT', '/api/v1/customers/c9', { user: { ...user, email: 'a@b.test', role: 'ACCOUNTANT' } });
+    expect(rows[0]).toMatchObject({ actorEmail: 'a@b.test', actorRole: 'ACCOUNTANT' });
+  });
+});
+
 describe('recordAuditEvent (inside the caller transaction)', () => {
+  // A created row only counts as committed when the test says so (see commit()).
   const makeTx = () => ({ platformAuditLog: { create: vi.fn(async ({ data }: any) => data) } });
+  const commit = (tx: any) => tx.platformAuditLog.create.mock.calls.forEach(([{ data }]: any) => store.committed.add(data.id));
 
   it('writes the row through the given transaction and suppresses the automatic row', async () => {
     const tx = makeTx();
     const { rows } = await run('POST', '/api/v1/invoices/inv1/submit', {
       user,
       before: { id: 'inv1', status: 'DRAFT' },
-      queue: (req) => recordAuditEvent(tx, req, { entityType: 'SALES_INVOICE', entityId: 'inv1', action: 'SUBMIT', statusBefore: 'DRAFT', statusAfter: 'SUBMITTED', message: 'Submitted INV-1' }),
+      queue: async (req) => { await recordAuditEvent(tx, req, { entityType: 'SALES_INVOICE', entityId: 'inv1', action: 'SUBMIT', statusBefore: 'DRAFT', statusAfter: 'SUBMITTED', message: 'Submitted INV-1' }); commit(tx); },
     });
     expect(tx.platformAuditLog.create).toHaveBeenCalledTimes(1);
     const data = tx.platformAuditLog.create.mock.calls[0][0].data;
@@ -286,11 +302,33 @@ describe('recordAuditEvent (inside the caller transaction)', () => {
       user,
       queue: async (req) => {
         await recordAuditEvent(tx, req, { entityType: 'QUOTATION', entityId: 'q1', action: 'ACCEPT' });
+        commit(tx);
         setAuditContext(req, { entityType: 'SALES_ORDER', entityId: 's1', action: 'CREATE' });
       },
     });
     expect(tx.platformAuditLog.create).toHaveBeenCalledTimes(1);
     expect(rows.map((row) => row.entityType)).toEqual(['SALES_ORDER']);
+  });
+
+  it('writes the automatic row when the transaction rolled back after the audit insert', async () => {
+    const tx = makeTx();
+    const { rows } = await run('POST', '/api/v1/invoices/inv1/submit', {
+      user,
+      queue: (req) => recordAuditEvent(tx, req, { entityType: 'SALES_INVOICE', entityId: 'inv1', action: 'SUBMIT' }), // never committed
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ userId: 'u1' });
+    expect(store.createMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('writes the automatic row when the commit cannot be confirmed', async () => {
+    const tx = makeTx();
+    store.countFails = true;
+    const { rows } = await run('POST', '/api/v1/invoices/inv1/submit', {
+      user,
+      queue: async (req) => { await recordAuditEvent(tx, req, { entityType: 'SALES_INVOICE', entityId: 'inv1', action: 'SUBMIT' }); commit(tx); },
+    });
+    expect(rows).toHaveLength(1);
   });
 
   it('refuses to run without a transaction client instead of silently writing outside one', async () => {
@@ -301,14 +339,14 @@ describe('recordAuditEvent (inside the caller transaction)', () => {
     const rootClient = { $connect: () => undefined, platformAuditLog: { create: vi.fn() } };
     await expect(recordAuditEvent(rootClient, req, event)).rejects.toThrow(/transaction client/);
     expect(rootClient.platformAuditLog.create).not.toHaveBeenCalled();
-    expect(req.auditPersisted).toBeUndefined();
+    expect(req.auditTxEventIds).toBeUndefined();
   });
 
   it('lets a failing audit insert reject so the surrounding transaction rolls back', async () => {
     const tx = { platformAuditLog: { create: vi.fn(async () => { throw new Error('insert failed'); }) } };
     const req: any = { method: 'POST', originalUrl: '/api/v1/invoices/inv1/submit', params: {}, body: {}, headers: {}, user, get: () => 'ua' };
     await expect(recordAuditEvent(tx, req, { entityType: 'SALES_INVOICE', entityId: 'inv1', action: 'SUBMIT' })).rejects.toThrow('insert failed');
-    expect(req.auditPersisted).toBeUndefined();
+    expect(req.auditTxEventIds).toBeUndefined();
   });
 });
 

@@ -123,6 +123,8 @@ function toSafeAuditRow(row: Record<string, any>) {
     branchId: cleanUuid(row.branchId, 'branchId'),
     companyId: cleanText(row.companyId, 200),
     userId: cleanText(row.userId, 200),
+    actorEmail: cleanText(row.actorEmail, 320),
+    actorRole: cleanText(row.actorRole, 100),
     entityType: cleanText(row.entityType, 200) || 'UNKNOWN',
     entityId: cleanText(row.entityId, 200),
     action: cleanText(row.action, 100) || 'UNKNOWN',
@@ -231,6 +233,8 @@ function buildAuditRow(req: AuthRequest, context: Record<string, any>, responseD
     companyId: context.companyId ?? req.user?.companyId,
     branchId: context.branchId ?? req.user?.branchId ?? undefined,
     userId: context.userId ?? req.user?.id,
+    actorEmail: context.actorEmail ?? req.user?.email,
+    actorRole: context.actorRole ?? req.user?.role,
     entityType: context.entityType ? String(context.entityType) : `${moduleName}:${resource}`.toUpperCase(),
     entityId: entityId ? String(entityId) : undefined,
     action: context.action || auditAction(req),
@@ -252,8 +256,9 @@ function buildAuditRow(req: AuthRequest, context: Record<string, any>, responseD
 // Records an audit event inside the caller's database transaction, so the audit row and the business
 // change commit or roll back together (an audit failure aborts the change instead of being lost).
 // Use this where a transaction already exists; setAuditContext covers everything else. It is still
-// the only place that writes an audit row, and it tells mutationAudit not to add an automatic row for
-// the same request. The response is not known yet, so `after` is only stored if the event gives it.
+// the only place that writes an audit row. It remembers the row's id so mutationAudit can confirm the
+// transaction really committed before it skips the automatic row (the insert alone proves nothing: a
+// later statement can still roll the whole transaction back). The response is not known yet, so `after` is only stored if the event gives it.
 // It refuses anything that is not a transaction client: falling back to the global client would
 // silently make the write non-atomic, which is exactly what this function exists to prevent.
 export async function recordAuditEvent(tx: any, req: Request, event: Record<string, any>) {
@@ -262,8 +267,17 @@ export async function recordAuditEvent(tx: any, req: Request, event: Record<stri
     throw new Error('recordAuditEvent must be called with a transaction client (prisma.$transaction(async (tx) => ...)); use setAuditContext when there is no transaction');
   }
   const row = buildAuditRow(req as AuthRequest, event);
-  await tx.platformAuditLog.create({ data: { id: crypto.randomUUID(), ...row } });
-  (req as any).auditPersisted = true;
+  const id = crypto.randomUUID();
+  await tx.platformAuditLog.create({ data: { id, ...row } });
+  ((req as any).auditTxEventIds ||= []).push(id);
+}
+
+// True only if every row written through recordAuditEvent survived: a rolled-back transaction leaves
+// none of them behind. A failed lookup counts as "not confirmed" so the automatic row is written
+// (a possible duplicate is better than a successful change with no audit entry).
+async function txEventsCommitted(ids: string[]) {
+  try { return (await prisma.platformAuditLog.count({ where: { id: { in: ids } } })) === ids.length; }
+  catch { return false; }
 }
 
 export async function mutationAudit(req: AuthRequest, res: Response, next: NextFunction) {
@@ -275,11 +289,11 @@ export async function mutationAudit(req: AuthRequest, res: Response, next: NextF
     const hasAuditIntent = (Boolean(req.user) || events.length > 0) && !res.locals?.skipAudit;
     if (hasAuditIntent && res.statusCode >= 200 && res.statusCode < 400 && moduleName !== 'auth') {
       const responseData = body?.data;
-      // Rows to write now: every queued event; with none queued, the single automatic row derived
-      // from the route, unless a transaction already persisted the rich event for this request.
-      const sources = events.length ? events : (req as any).auditPersisted ? [] : [{}];
-      const rows = sources.map((context) => buildAuditRow(req, context, responseData));
-      if (!rows.length) return originalJson(body);
+      const txEventIds: string[] = (req as any).auditTxEventIds || [];
+      // The single automatic row (derived from the route) is written when nothing else covers the
+      // request: no queued events and no committed transaction event.
+      const rowsFor = (coveredByTransaction: boolean) =>
+        (events.length ? events : coveredByTransaction ? [] : [{}]).map((context) => buildAuditRow(req, context, responseData));
       // The response is held until the audit rows are stored, so a failed write is never silent: it is
       // retried once, and if it still fails the rows are logged for recovery and the client is warned
       // with an X-Audit-Warning header (the business change itself is already committed by now).
@@ -295,10 +309,20 @@ export async function mutationAudit(req: AuthRequest, res: Response, next: NextF
           catch { res.end(); }
         }
       };
-      void writeAuditRows(rows).catch(() => false).then((stored) => {
-        if (!stored && !res.headersSent) res.setHeader('X-Audit-Warning', 'write-failed');
-        sendResponse();
-      });
+      const store = (rows: Record<string, any>[]) => {
+        if (!rows.length) return sendResponse();
+        void writeAuditRows(rows).catch(() => false).then((stored) => {
+          if (!stored && !res.headersSent) res.setHeader('X-Audit-Warning', 'write-failed');
+          sendResponse();
+        });
+      };
+      if (!events.length && txEventIds.length) {
+        void txEventsCommitted(txEventIds).then((committed) => store(rowsFor(committed)));
+        return res;
+      }
+      const rows = rowsFor(false);
+      if (!rows.length) return originalJson(body);
+      store(rows);
       return res;
     }
     return originalJson(body);

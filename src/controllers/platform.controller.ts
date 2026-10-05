@@ -100,6 +100,10 @@ export const listAudit = async (req: Request, res: Response) => {
     prisma.user.findMany({ where: { companyId: companyId || undefined }, select: { id: true, firstName: true, lastName: true, email: true, role: true, employee: { select: { employeeId: true } } }, orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }] }),
   ]);
   const actors = new Map(users.map(user => [user.id, user]));
-  const items = rows.map(item => ({ ...item, actor: item.userId ? actors.get(item.userId) || null : null }));
+  // Rows keep the actor's email/role as they were when written, so a deleted user is still identifiable.
+  const items = rows.map(item => ({
+    ...item,
+    actor: item.userId ? actors.get(item.userId) || (item.actorEmail ? { id: item.userId, firstName: null, lastName: null, email: item.actorEmail, role: item.actorRole, employee: null } : null) : null,
+  }));
   return success(res, { items, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)), users });
 };
