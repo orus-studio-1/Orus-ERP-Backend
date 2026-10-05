@@ -131,6 +131,8 @@ export const amendInvoice = async (req: Request, res: Response) => {
         include: invoiceInclude,
       });
       await audit(tx, req, { entityType: 'SALES_INVOICE', entityId: amended.id, invoiceId: amended.id, action: 'AMEND', statusAfter: 'DRAFT', message: `Amended from ${existing.invoiceNo}` });
+      // The cancelled original gets its own entry too, so its history shows that it was amended.
+      await audit(tx, req, { entityType: 'SALES_INVOICE', entityId: existing.id, invoiceId: existing.id, action: 'AMEND', statusBefore: existing.status, statusAfter: existing.status, message: `Amended into ${amended.invoiceNo}` });
       return amended;
     });
     return success(res, invoiceResponse(invoice), 'Invoice amended', 201);
