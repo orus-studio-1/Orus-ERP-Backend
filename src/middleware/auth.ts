@@ -63,11 +63,17 @@ export const authenticate = async (req: AuthRequest, res: Response, next: NextFu
     req.context = { tenantId: req.user.tenantId, companyId, branchId: req.user.branchId, userId: currentUser.id, requestId: String(req.headers['x-request-id'] || crypto.randomUUID()) };
     req.access = await computeEffectiveAccess(decoded.id);
     if (!req.user.companyId && req.access.companyId) req.user.companyId = req.access.companyId;
-    await runWithTenant(req.context, async () => { await captureBeforeSnapshot(req); next(); });
+    runWithTenant(req.context, () => next());
   } catch (err: any) {
     console.error('Unable to load authenticated session:', err);
     error(res, 'Unable to load your session. Please try again.', 500);
   }
+};
+
+// For routers that have no permission gate: take the audit "before" snapshot for authenticated requests.
+export const captureAuditBefore = async (req: AuthRequest, _res: Response, next: NextFunction): Promise<void> => {
+  await captureBeforeSnapshot(req);
+  next();
 };
 
 export const authorize = (...roles: string[]) =>
@@ -83,10 +89,14 @@ export const authorize = (...roles: string[]) =>
     next();
   };
 
+// The audit "before" snapshot is read only after a permission gate has let the request through, so
+// requests that are going to be rejected with a 403 never cost an extra database read. Routers that
+// have no gate of their own opt in explicitly with captureAuditBefore.
 export const requirePermission = (module: string, resource: string, action: any) =>
-  (req: AuthRequest, res: Response, next: NextFunction): void => {
+  async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
     if (hasPermission(req.access, module, resource, action)) {
       req.permissionGatePassed = true;
+      await captureBeforeSnapshot(req);
       next();
       return;
     }
@@ -94,7 +104,7 @@ export const requirePermission = (module: string, resource: string, action: any)
   };
 
 export const requireModuleAccess = (module: string, resourceResolver?: (req: Request) => string) =>
-  (req: AuthRequest, res: Response, next: NextFunction): void => {
+  async (req: AuthRequest, res: Response, next: NextFunction): Promise<void> => {
     const action = getActionForRequest(req.method, req.path);
     const segment = resourceResolver ? resourceResolver(req) : firstPathSegment(req.path);
     const aliases: Record<string, Record<string, string>> = {
@@ -107,6 +117,7 @@ export const requireModuleAccess = (module: string, resourceResolver?: (req: Req
     const resource = aliases[module]?.[segment] || segment;
     if (hasPermission(req.access, module, resource, action)) {
       req.permissionGatePassed = true;
+      await captureBeforeSnapshot(req);
       next();
       return;
     }

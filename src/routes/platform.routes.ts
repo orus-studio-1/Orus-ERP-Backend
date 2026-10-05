@@ -1,10 +1,11 @@
 import { Router } from 'express';
-import { authenticate, requirePermission } from '../middleware/auth';
+import { authenticate, captureAuditBefore, requirePermission } from '../middleware/auth';
 import { idempotency, optimisticConcurrency } from '../middleware/platform';
 import * as platform from '../controllers/platform.controller';
 
 const router = Router();
 router.use(authenticate);
+router.use(captureAuditBefore);
 router.use(idempotency);
 
 router.route('/tenant').get(platform.getTenant).patch(platform.updateTenant);
