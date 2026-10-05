@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { error } from '../utils/response';
 import { computeEffectiveAccess, firstPathSegment, getActionForRequest, hasPermission, EffectiveAccess } from '../utils/accessControl';
 import { runWithTenant } from '../utils/tenant';
+import { captureBeforeSnapshot } from './platform';
 import prisma from '../lib/prisma';
 
 export interface AuthRequest extends Request {
@@ -62,7 +63,7 @@ export const authenticate = async (req: AuthRequest, res: Response, next: NextFu
     req.context = { tenantId: req.user.tenantId, companyId, branchId: req.user.branchId, userId: currentUser.id, requestId: String(req.headers['x-request-id'] || crypto.randomUUID()) };
     req.access = await computeEffectiveAccess(decoded.id);
     if (!req.user.companyId && req.access.companyId) req.user.companyId = req.access.companyId;
-    runWithTenant(req.context, () => next());
+    await runWithTenant(req.context, async () => { await captureBeforeSnapshot(req); next(); });
   } catch (err: any) {
     console.error('Unable to load authenticated session:', err);
     error(res, 'Unable to load your session. Please try again.', 500);

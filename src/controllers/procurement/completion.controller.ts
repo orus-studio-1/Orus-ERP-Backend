@@ -8,13 +8,14 @@ import { generatePONo } from '../../utils/generate';
 import { documentTotals, nextNo } from '../../services/procurement/procurement.service';
 import { runThreeWayMatch } from '../../services/procurement/matching.service';
 import { postStockLedger } from '../../services/inventory/stockLedger.service';
+import { recordAuditEvent, setAuditContext } from '../../middleware/platform';
 
 const D = Prisma.Decimal;
 const actor = (req: Request) => (req as any).user || {};
 const companyId = (req: Request) => actor(req).companyId || undefined;
 const tenantId = (req: Request) => actor(req).tenantId;
 const code = (prefix: string) => `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-const audit = (tx: any, req: Request, data: any) => tx.procurementAuditEvent.create({ data: { companyId: companyId(req), actorId: actor(req).id, ...data } });
+const audit = (tx: any, req: Request, data: any) => recordAuditEvent(tx, req, data);
 
 async function approval(tx: any, req: Request, documentType: string, documentId: string) {
   if (!tenantId(req)) return undefined;
@@ -67,14 +68,46 @@ export async function rfqOperation(req: Request, res: Response) {
   } catch (e: any) { return error(res, e.message || 'RFQ operation failed', 400); }
 }
 
+// The vendor portal is public (no session), so these audit events carry their own tenant and company.
+async function vendorAuditScope(companyId?: string | null) {
+  const company = companyId ? await prisma.company.findUnique({ where: { id: companyId }, select: { tenantId: true } }) : null;
+  return { companyId: companyId || undefined, tenantId: company?.tenantId || undefined };
+}
+
 export async function acknowledgeRfq(req: Request, res: Response) {
-  try { const supplier = await prisma.requestForQuotationSupplier.update({ where: { portalToken: req.params.token }, data: { status: req.body.accepted === false ? 'DECLINED' : 'RESPONDED', acknowledgedAt: new Date(), respondedAt: new Date(), acknowledgement: req.body.message } }); return success(res, supplier, 'RFQ acknowledgement recorded'); }
+  let supplier: any;
+  try { supplier = await prisma.requestForQuotationSupplier.update({ where: { portalToken: req.params.token }, data: { status: req.body.accepted === false ? 'DECLINED' : 'RESPONDED', acknowledgedAt: new Date(), respondedAt: new Date(), acknowledgement: req.body.message } }); }
   catch { return error(res, 'Invalid RFQ portal token', 404); }
+  try {
+    const rfq = await prisma.requestForQuotation.findUnique({ where: { id: supplier.rfqId }, select: { companyId: true, rfqNo: true } });
+    const declined = req.body.accepted === false;
+    setAuditContext(req, {
+      entityType: 'RFQ', entityId: supplier.rfqId, rfqId: supplier.rfqId,
+      action: declined ? 'VENDOR_DECLINED' : 'VENDOR_ACKNOWLEDGED', statusAfter: supplier.status,
+      message: `Vendor ${declined ? 'declined' : 'acknowledged'} ${rfq?.rfqNo || 'RFQ'}${req.body.message ? `: ${req.body.message}` : ''}`,
+      after: { supplierId: supplier.supplierId, status: supplier.status },
+      ...(await vendorAuditScope(rfq?.companyId)),
+    });
+  } catch (err) { console.error('Unable to queue vendor RFQ audit event:', err); }
+  return success(res, supplier, 'RFQ acknowledgement recorded');
 }
 
 export async function acknowledgePurchaseOrder(req: Request, res: Response) {
-  try { const po = await prisma.purchaseOrder.update({ where: { publicToken: req.params.token }, data: { acknowledgedAt: new Date(), vendorAcknowledgement: req.body.message, status: req.body.accepted === false ? 'CANCELLED' : 'CONFIRMED' } }); return success(res, po, 'Purchase order acknowledgement recorded'); }
-  catch { return error(res, 'Invalid purchase-order token', 404); }
+  let po: any; let statusBefore: string | undefined;
+  try {
+    statusBefore = (await prisma.purchaseOrder.findUnique({ where: { publicToken: req.params.token }, select: { status: true } }))?.status;
+    po = await prisma.purchaseOrder.update({ where: { publicToken: req.params.token }, data: { acknowledgedAt: new Date(), vendorAcknowledgement: req.body.message, status: req.body.accepted === false ? 'CANCELLED' : 'CONFIRMED' } });
+  } catch { return error(res, 'Invalid purchase-order token', 404); }
+  try {
+    const declined = req.body.accepted === false;
+    setAuditContext(req, {
+      entityType: 'PURCHASE_ORDER', entityId: po.id, rfqId: po.rfqId || undefined,
+      action: declined ? 'VENDOR_DECLINED' : 'VENDOR_ACKNOWLEDGED', statusBefore, statusAfter: po.status,
+      message: `Vendor ${declined ? 'declined' : 'acknowledged'} ${po.orderNo}${req.body.message ? `: ${req.body.message}` : ''}`,
+      ...(await vendorAuditScope(po.companyId)),
+    });
+  } catch (err) { console.error('Unable to queue vendor purchase-order audit event:', err); }
+  return success(res, po, 'Purchase order acknowledgement recorded');
 }
 
 export async function reviseSupplierQuotation(req: Request, res: Response) {

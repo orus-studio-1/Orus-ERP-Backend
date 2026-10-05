@@ -16,7 +16,6 @@ import {
   getRevenueByPeriod,
   getSubscriptions,
   getTaxTemplates,
-  getAuditLogs,
   updateCreditNoteStatus,
   updateTaxTemplate,
   runDueSubscriptions,
@@ -45,8 +44,6 @@ router.patch('/print-formats/:id', updatePrintFormat);
 router.route('/subscriptions').get(getSubscriptions).post(createSubscription);
 router.patch('/subscriptions/:id', updateSubscription);
 router.post('/subscriptions/run-due', authorize('SUPER_ADMIN', 'ADMIN', 'ACCOUNTANT'), runDueSubscriptions);
-
-router.get('/audit-logs', getAuditLogs);
 
 router.get('/reports/outstanding', getOutstandingInvoices);
 router.get('/reports/revenue-by-customer', getRevenueByCustomer);

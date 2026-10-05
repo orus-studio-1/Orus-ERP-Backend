@@ -4816,10 +4816,18 @@ model PlatformAuditLog {
   ip         String?
   userAgent  String?
   requestId  String?
+  statusBefore String?
+  statusAfter  String?
+  message      String?
+  targetUserId String?
+  targetRoleId String?
+  rfqId        String?
   createdAt  DateTime @default(now())
 
   @@index([tenantId, createdAt])
   @@index([tenantId, entityType, entityId, createdAt])
+  @@index([tenantId, rfqId, createdAt])
+  @@index([tenantId, targetUserId, createdAt])
 }
 
 model Attachment {
