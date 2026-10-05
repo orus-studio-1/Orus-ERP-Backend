@@ -103,6 +103,9 @@ app.use(
       return callback(new Error('Origin is not allowed by CORS'));
     },
     credentials: true,
+    // Without this a browser on another origin cannot read the header, so the frontend never
+    // learns that a change was saved but its audit entry could not be recorded.
+    exposedHeaders: ['X-Audit-Warning'],
   })
 );
 
