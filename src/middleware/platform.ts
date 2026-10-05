@@ -218,6 +218,14 @@ export function setAuditContext(req: Request, patch: Record<string, any>) {
 function buildAuditRow(req: AuthRequest, context: Record<string, any>, responseData?: any) {
   const { moduleName, resource, pathEntityId } = parseAuditPath(req.originalUrl || req.path, req.method);
   const entityId = context.entityId || req.params?.id || pathEntityId || responseData?.id || responseData?.data?.id;
+  // The request carries one "before" snapshot (the record in the URL) and one response body. They
+  // describe a single record, so an event that explicitly names a different entity must not inherit
+  // them (e.g. amending an invoice also logs the new draft, which has no "before" of its own).
+  const explicitEntity = Boolean(context.entityId);
+  const snapshot = (req as any).auditBefore;
+  const responseId = responseData?.id ?? responseData?.data?.id;
+  const snapshotBelongsHere = snapshot !== undefined && (!explicitEntity || String(snapshot?.id) === String(context.entityId));
+  const responseBelongsHere = responseData !== undefined && (!explicitEntity || (responseId != null && String(responseId) === String(context.entityId)));
   return toSafeAuditRow({
     tenantId: context.tenantId ?? req.user?.tenantId ?? undefined,
     companyId: context.companyId ?? req.user?.companyId,
@@ -232,9 +240,9 @@ function buildAuditRow(req: AuthRequest, context: Record<string, any>, responseD
     targetUserId: context.targetUserId,
     targetRoleId: context.targetRoleId,
     rfqId: context.rfqId,
-    before: context.before !== undefined ? sanitizeAuditValue(context.before) : sanitizeAuditValue((req as any).auditBefore),
+    before: context.before !== undefined ? sanitizeAuditValue(context.before) : snapshotBelongsHere ? sanitizeAuditValue(snapshot) : undefined,
     diff: context.diff !== undefined ? sanitizeAuditValue(context.diff) : sanitizeAuditValue(req.body || {}),
-    after: context.after !== undefined ? sanitizeAuditValue(context.after) : sanitizeAuditValue(responseData),
+    after: context.after !== undefined ? sanitizeAuditValue(context.after) : responseBelongsHere ? sanitizeAuditValue(responseData) : undefined,
     ip: req.ip,
     userAgent: req.get('user-agent'),
     requestId: req.context?.requestId,
@@ -275,9 +283,21 @@ export async function mutationAudit(req: AuthRequest, res: Response, next: NextF
       // The response is held until the audit rows are stored, so a failed write is never silent: it is
       // retried once, and if it still fails the rows are logged for recovery and the client is warned
       // with an X-Audit-Warning header (the business change itself is already committed by now).
-      void writeAuditRows(rows).then((stored) => {
+      // This runs after the controller has returned, so an error thrown while sending (an
+      // unserialisable body, headers already sent) can no longer reach the controller's own catch.
+      // Answer with a generic 500 instead of leaving the request open forever.
+      const sendResponse = () => {
+        try { originalJson(body); }
+        catch (err) {
+          console.error('Unable to send response after the audit write:', err);
+          if (res.headersSent) { res.end(); return; }
+          try { res.status(500); originalJson({ success: false, message: 'Internal server error' }); }
+          catch { res.end(); }
+        }
+      };
+      void writeAuditRows(rows).catch(() => false).then((stored) => {
         if (!stored && !res.headersSent) res.setHeader('X-Audit-Warning', 'write-failed');
-        originalJson(body);
+        sendResponse();
       });
       return res;
     }

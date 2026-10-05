@@ -119,6 +119,31 @@ describe('before snapshots', () => {
     expect(rows[0].before).toMatchObject({ id: 'abc', name: 'OLD', parentHash: '[REDACTED]', pan: '[REDACTED]', panAvailable: true, company: 'Acme' });
   });
 
+  it('gives the snapshot and response only to the event for that record, not to other entities in the request', async () => {
+    const { rows } = await run('POST', '/api/v1/invoices/inv1/amend', {
+      user,
+      before: { id: 'inv1', invoiceNo: 'INV-1' },
+      queue: (req) => {
+        setAuditContext(req, { entityType: 'SALES_INVOICE', entityId: 'new1', action: 'AMEND' });
+        setAuditContext(req, { entityType: 'SALES_INVOICE', entityId: 'inv1', action: 'AMEND' });
+        setAuditContext(req, { entityType: 'SALES_INVOICE', entityId: 'resp1', action: 'AMEND' });
+      },
+    });
+    const byEntity = Object.fromEntries(rows.map((row) => [row.entityId, row]));
+    expect(byEntity.new1.before).toBeUndefined();
+    expect(byEntity.new1.after).toBeUndefined();
+    expect(byEntity.inv1.before).toMatchObject({ id: 'inv1', invoiceNo: 'INV-1' });
+    expect(byEntity.inv1.after).toBeUndefined();
+    expect(byEntity.resp1.before).toBeUndefined();
+    expect(byEntity.resp1.after).toMatchObject({ id: 'resp1' });
+  });
+
+  it('still gives the snapshot and response to the automatic row, which describes the request\x27s own record', async () => {
+    const { rows } = await run('PUT', '/api/v1/hr/leave-types/abc', { user, before: { id: 'abc', name: 'OLD' } });
+    expect(rows[0].before).toMatchObject({ id: 'abc', name: 'OLD' });
+    expect(rows[0].after).toMatchObject({ id: 'resp1' });
+  });
+
   it('resolves models from route names and keeps explicit overrides', () => {
     expect(auditDelegateFor('accounting', 'journal-entries')).toBe('journalEntry');
     expect(auditDelegateFor('inventory', 'batches')).toBe('batch');
@@ -171,6 +196,52 @@ describe('audit write durability', () => {
     expect(headers['X-Audit-Warning']).toBe('write-failed');
     expect(log).toHaveBeenCalled();
     log.mockRestore();
+  });
+});
+
+describe('deferred response when sending fails', () => {
+  const setup = (throwOnFirstSend: boolean, headersAlreadySent = false) => {
+    const sent: any[] = [];
+    let calls = 0;
+    const req: any = { method: 'POST', path: '/api/v1/hr/leave-types', originalUrl: '/api/v1/hr/leave-types', params: {}, body: {}, headers: {}, ip: '1.1.1.1', get: () => 'ua', user };
+    const res: any = {
+      statusCode: 200,
+      headersSent: false,
+      locals: {},
+      setHeader: () => undefined,
+      status(code: number) { this.statusCode = code; return this; },
+      json(body: any) { calls++; if (throwOnFirstSend && calls === 1) { this.headersSent = headersAlreadySent; throw new TypeError('Do not know how to serialize a BigInt'); } sent.push({ code: this.statusCode, body }); return this; },
+      end() { sent.push('end'); },
+    };
+    return { req, res, sent };
+  };
+
+  it('answers with a generic 500 instead of leaving the request open', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { req, res, sent } = setup(true);
+    await new Promise<void>((resolve) => mutationAudit(req, res, () => resolve()));
+    res.json({ data: { id: 'x' } });
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]).toEqual({ code: 500, body: { success: false, message: 'Internal server error' } });
+    expect(log).toHaveBeenCalled();
+    log.mockRestore();
+  });
+
+  it('ends the response when the headers were already sent', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { req, res, sent } = setup(true, true);
+    await new Promise<void>((resolve) => mutationAudit(req, res, () => resolve()));
+    res.json({ data: { id: 'x' } });
+    await vi.waitFor(() => expect(sent).toEqual(['end']));
+    log.mockRestore();
+  });
+
+  it('sends normally when nothing fails', async () => {
+    const { req, res, sent } = setup(false);
+    await new Promise<void>((resolve) => mutationAudit(req, res, () => resolve()));
+    res.json({ data: { id: 'x' } });
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]).toEqual({ code: 200, body: { data: { id: 'x' } } });
   });
 });
 
