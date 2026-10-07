@@ -6,6 +6,7 @@ import {
   createPrintFormat,
   createSubscription,
   createTaxTemplate,
+  getAuditLogs,
   getCreditNote,
   getCreditNotes,
   getLedgerEntries,
@@ -37,6 +38,7 @@ router.route('/credit-notes/:id').get(getCreditNote).put(updateCreditNote).patch
 router.patch('/credit-notes/:id/status', updateCreditNoteStatus);
 
 router.get('/ledger', getLedgerEntries);
+router.get('/audit-logs', getAuditLogs);
 
 router.route('/print-formats').get(getPrintFormats).post(createPrintFormat);
 router.patch('/print-formats/:id', updatePrintFormat);
