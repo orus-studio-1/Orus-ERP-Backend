@@ -6,7 +6,7 @@ const store = vi.hoisted(() => ({
   createMany: vi.fn(),
   committed: new Set<string>(),
   countFails: false,
-  idempotencyRecord: { findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
+  idempotencyRecord: { findUnique: vi.fn(), create: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
 }));
 
 vi.mock('../lib/prisma', () => ({
@@ -265,20 +265,102 @@ describe('deferred response when sending fails', () => {
   });
 });
 
-describe('idempotency replay', () => {
-  it('does not audit a replayed stored response', async () => {
-    const body = { data: { id: 'x' } };
-    store.idempotencyRecord.findUnique.mockResolvedValue({ requestHash: 'h', state: 'COMPLETED', responseBody: body });
-    const hash = (await import('crypto')).createHash('sha256').update(JSON.stringify({ method: 'POST', path: '/api/v1/platform/documents', body: { a: 1 } })).digest('hex');
-    store.idempotencyRecord.findUnique.mockResolvedValue({ requestHash: hash, state: 'COMPLETED', responseBody: body });
+describe('idempotency', () => {
+  const body = { data: { id: 'x' } };
+  const future = () => new Date(Date.now() + 3600000);
+  const hashOf = async (payload: any) => (await import('crypto')).createHash('sha256').update(JSON.stringify({ method: 'POST', path: '/api/v1/platform/documents', body: payload })).digest('hex');
 
-    const req: any = { method: 'POST', path: '/documents', originalUrl: '/api/v1/platform/documents', body: { a: 1 }, headers: { 'idempotency-key': 'k1' }, ip: '1.1.1.1', get: () => 'ua', user };
-    let sent = false;
-    const res: any = { statusCode: 200, headersSent: false, locals: {}, setHeader: () => undefined, status(code: number) { this.statusCode = code; return this; }, json() { sent = true; return this; } };
+  async function post(payload: any = { a: 1 }) {
+    const req: any = { method: 'POST', path: '/documents', originalUrl: '/api/v1/platform/documents', body: payload, headers: { 'idempotency-key': 'k1' }, ip: '1.1.1.1', get: () => 'ua', user };
+    const out: { status?: number; sent?: any; next: boolean } = { next: false };
+    const res: any = { statusCode: 200, headersSent: false, locals: {}, setHeader: () => undefined, status(code: number) { this.statusCode = code; out.status = code; return this; }, json(value: any) { out.sent = value; return this; } };
     await new Promise<void>((resolve) => mutationAudit(req, res, () => resolve()));
-    await idempotency(req, res, () => undefined);
-    await vi.waitFor(() => expect(sent).toBe(true));
+    await idempotency(req, res, () => { out.next = true; });
+    return { ...out, res };
+  }
+
+  beforeEach(() => {
+    store.idempotencyRecord.findUnique.mockReset();
+    store.idempotencyRecord.create.mockReset().mockResolvedValue({});
+    store.idempotencyRecord.update.mockReset().mockResolvedValue({});
+    store.idempotencyRecord.updateMany.mockReset().mockResolvedValue({ count: 1 });
+  });
+
+  it('does not audit a replayed stored response', async () => {
+    store.idempotencyRecord.findUnique.mockResolvedValue({ requestHash: await hashOf({ a: 1 }), state: 'COMPLETED', statusCode: 201, responseBody: body, expiresAt: future() });
+    const result = await post();
+    expect(result.sent).toEqual(body);
+    expect(result.res.locals.skipAudit).toBe(true);
     expect(store.createMany).not.toHaveBeenCalled();
+  });
+
+  it('replays the stored status, so a stored 400 is not turned into a success', async () => {
+    const failure = { success: false, message: 'Validation failed' };
+    store.idempotencyRecord.findUnique.mockResolvedValue({ requestHash: await hashOf({ a: 1 }), state: 'COMPLETED', statusCode: 400, responseBody: failure, expiresAt: future() });
+    const result = await post();
+    expect(result.status).toBe(400);
+    expect(result.sent).toEqual(failure);
+  });
+
+  it('rejects the same key used with a different request', async () => {
+    store.idempotencyRecord.findUnique.mockResolvedValue({ requestHash: await hashOf({ a: 1 }), state: 'COMPLETED', statusCode: 200, responseBody: body, expiresAt: future() });
+    const result = await post({ a: 2 });
+    expect(result.status).toBe(409);
+    expect(result.sent.code ?? result.sent.errorCode ?? JSON.stringify(result.sent)).toContain('IDEMPOTENCY_CONFLICT');
+  });
+
+  it('answers 409 while an identical request is still processing', async () => {
+    store.idempotencyRecord.findUnique.mockResolvedValue({ requestHash: await hashOf({ a: 1 }), state: 'PROCESSING', expiresAt: future() });
+    const result = await post();
+    expect(result.status).toBe(409);
+    expect(result.next).toBe(false);
+  });
+
+  it('lets a request retry with the same key after the earlier attempt failed', async () => {
+    store.idempotencyRecord.findUnique.mockResolvedValue({ requestHash: await hashOf({ a: 1 }), state: 'FAILED', statusCode: 500, expiresAt: future() });
+    const result = await post();
+    expect(result.next).toBe(true);
+    expect(store.idempotencyRecord.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ key: 'k1', state: 'FAILED' }), data: expect.objectContaining({ state: 'PROCESSING' }) }));
+  });
+
+  it('lets a failed key be retried with a corrected request body', async () => {
+    store.idempotencyRecord.findUnique.mockResolvedValue({ requestHash: await hashOf({ a: 1 }), state: 'FAILED', statusCode: 500, expiresAt: future() });
+    const result = await post({ a: 2 });
+    expect(result.next).toBe(true);
+    expect(result.status).toBeUndefined();
+  });
+
+  it('treats an expired record as unused instead of replaying it', async () => {
+    store.idempotencyRecord.findUnique.mockResolvedValue({ requestHash: await hashOf({ a: 1 }), state: 'COMPLETED', statusCode: 200, responseBody: body, expiresAt: new Date(Date.now() - 1000) });
+    const result = await post();
+    expect(result.next).toBe(true);
+    expect(result.sent).toBeUndefined();
+  });
+
+  it('answers 409 when another retry took over the failed key first', async () => {
+    store.idempotencyRecord.findUnique.mockResolvedValue({ requestHash: await hashOf({ a: 1 }), state: 'FAILED', statusCode: 500, expiresAt: future() });
+    store.idempotencyRecord.updateMany.mockResolvedValue({ count: 0 });
+    const result = await post();
+    expect(result.status).toBe(409);
+    expect(result.next).toBe(false);
+  });
+
+  it('answers 409 instead of failing when two new requests race on the same key', async () => {
+    store.idempotencyRecord.findUnique.mockResolvedValue(null);
+    store.idempotencyRecord.create.mockRejectedValue(Object.assign(new Error('unique'), { code: 'P2002' }));
+    const result = await post();
+    expect(result.status).toBe(409);
+    expect(result.next).toBe(false);
+  });
+
+  it('records a new key as COMPLETED with the response status once the handler answers', async () => {
+    store.idempotencyRecord.findUnique.mockResolvedValue(null);
+    const result = await post();
+    expect(result.next).toBe(true);
+    result.res.statusCode = 422;
+    result.res.json({ success: false });
+    await vi.waitFor(() => expect(store.idempotencyRecord.update).toHaveBeenCalled());
+    expect(store.idempotencyRecord.update.mock.calls[0][0].data).toMatchObject({ state: 'COMPLETED', statusCode: 422 });
   });
 });
 

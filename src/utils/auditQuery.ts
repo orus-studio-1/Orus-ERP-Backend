@@ -15,12 +15,23 @@ export const bareEntityTypesByModule: Record<string, string[]> = {
   ACCESS: ['ACCESS'],
 };
 
+// The automatic row is named after the first URL segment, so a router mounted under another name
+// (/api/invoices, /api/payments, /api/delivery-notes, /api/products, /api/sales-orders) writes
+// INVOICES:..., PAYMENTS:... and so on. Those prefixes belong to the module that owns the router.
+// auditQuery.test.ts checks every mount in index.ts is either a module option or listed here.
+export const prefixAliasesByModule: Record<string, string[]> = {
+  INVOICING: ['INVOICES', 'PAYMENTS', 'DELIVERY-NOTES'],
+  INVENTORY: ['PRODUCTS'],
+  SALES: ['SALES-ORDERS'],
+};
+
 export function moduleAuditWhere(moduleName: string) {
   const upper = moduleName.toUpperCase();
   const bareTypes = bareEntityTypesByModule[upper] || [];
+  const prefixes = [upper, ...(prefixAliasesByModule[upper] || [])];
   return {
     OR: [
-      { entityType: { startsWith: `${upper}:` } },
+      ...prefixes.map((prefix) => ({ entityType: { startsWith: `${prefix}:` } })),
       { entityType: moduleName.toLowerCase() },
       ...(bareTypes.length ? [{ entityType: { in: bareTypes } }] : []),
     ],

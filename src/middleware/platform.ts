@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response } from 'express';
 import crypto from 'crypto';
+import { Prisma } from '@prisma/client';
 import prisma from '../lib/prisma';
 import type { AuthRequest } from './auth';
 import { error } from '../utils/response';
@@ -179,21 +180,35 @@ export async function idempotency(req: AuthRequest, res: Response, next: NextFun
   const tenantId = req.user?.tenantId;
   if (!tenantId) return error(res, 'Tenant context is required', 403, undefined, 'TENANT_REQUIRED');
   const requestHash = crypto.createHash('sha256').update(JSON.stringify({ method: req.method, path: req.originalUrl, body: req.body })).digest('hex');
-  const existing = await prisma.idempotencyRecord.findUnique({ where: { tenantId_key: { tenantId, key } } });
-  if (existing) {
+  const recordKey = { tenantId_key: { tenantId, key } };
+  const existing = await prisma.idempotencyRecord.findUnique({ where: recordKey });
+  // A key can be used again when its earlier attempt failed (5xx) or the record has expired.
+  const reusable = existing && (existing.state === 'FAILED' || existing.expiresAt.getTime() <= Date.now());
+  if (existing && !reusable) {
     if (existing.requestHash !== requestHash) return error(res, 'Idempotency key was used with a different request', 409, undefined, 'IDEMPOTENCY_CONFLICT');
     if (existing.state === 'COMPLETED') {
-      // Replaying a stored response did not change anything, so it must not be audited again.
+      // Replaying a stored response did not change anything, so it must not be audited again. The
+      // original status is kept, so a stored 400 is replayed as a 400 and not turned into a success.
       res.locals.skipAudit = true;
-      return res.status(200).json(existing.responseBody);
+      return res.status(existing.statusCode ?? 200).json(existing.responseBody);
     }
     return error(res, 'An identical request is already processing', 409, undefined, 'IDEMPOTENCY_IN_PROGRESS');
   }
-  await prisma.idempotencyRecord.create({ data: { tenantId, key, requestHash, method: req.method, path: req.originalUrl, expiresAt: new Date(Date.now() + 86400000) } });
+  const inProgress = () => error(res, 'An identical request is already processing', 409, undefined, 'IDEMPOTENCY_IN_PROGRESS');
+  const expiresAt = new Date(Date.now() + 86400000);
+  if (existing) {
+    // Only one of several concurrent retries may take the key over: the state it read must still be current.
+    const claimed = await prisma.idempotencyRecord.updateMany({ where: { tenantId, key, state: existing.state, expiresAt: existing.expiresAt }, data: { requestHash, method: req.method, path: req.originalUrl, state: 'PROCESSING', statusCode: null, responseBody: Prisma.DbNull, completedAt: null, expiresAt } });
+    if (!claimed.count) return inProgress();
+  } else {
+    try { await prisma.idempotencyRecord.create({ data: { tenantId, key, requestHash, method: req.method, path: req.originalUrl, expiresAt } }); }
+    // Two requests with the same new key can race: the loser hits the unique index instead of a 500.
+    catch (err: any) { if (err?.code === 'P2002') return inProgress(); throw err; }
+  }
   const originalJson = res.json.bind(res);
   res.json = ((body: any) => {
     const completed = res.statusCode < 500;
-    prisma.idempotencyRecord.update({ where: { tenantId_key: { tenantId, key } }, data: { state: completed ? 'COMPLETED' : 'FAILED', statusCode: res.statusCode, responseBody: body, completedAt: new Date() } }).catch(() => null);
+    prisma.idempotencyRecord.update({ where: recordKey, data: { state: completed ? 'COMPLETED' : 'FAILED', statusCode: res.statusCode, responseBody: body, completedAt: new Date() } }).catch(() => null);
     return originalJson(body);
   }) as any;
   next();
