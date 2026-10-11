@@ -10,6 +10,7 @@ import {
   getAssignmentRules, createAssignmentRule, updateAssignmentRule, deleteAssignmentRule, testAssignmentRule,
   checkDuplicateLead, mergeLeads, assignLead, bulkAssignLeads, getLeadTimeline,
   createScopeRule, listScopeRules, deleteScopeRule, listLostReasons, createLostReason, updateLostReason,
+  listTerritories, createTerritory, updateTerritory, deleteTerritory,
   getCrmConfiguration, updateDefaultQueue,
   moveOpportunityStage, winOpportunity, loseOpportunity, opportunityHistory,
   myDay, overdueActivities, activityCalendar, addActivityAttendees, createDailyDigest,
@@ -90,6 +91,8 @@ router.route('/scope-rules').get(listScopeRules).post(createScopeRule);
 router.delete('/scope-rules/:id', deleteScopeRule);
 router.get('/configuration', getCrmConfiguration);
 router.put('/configuration/default-queue', updateDefaultQueue);
+router.route('/territories').get(listTerritories).post(createTerritory);
+router.route('/territories/:id').patch(updateTerritory).delete(deleteTerritory);
 router.route('/lost-reasons').get(listLostReasons).post(createLostReason);
 router.patch('/lost-reasons/:id', updateLostReason);
 router.route('/email-templates').get(listEmailTemplates).post(createEmailTemplate);

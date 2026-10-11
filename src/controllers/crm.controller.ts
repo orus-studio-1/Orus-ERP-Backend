@@ -7,3 +7,4 @@ export * from './crm/dashboard.controller';
 export * from './crm/savedViews.controller';
 export * from './crm/assignmentRules.controller';
 export * from './crm/completion.controller';
+export * from './crm/territories.controller';

@@ -4,7 +4,7 @@ import prisma from '../../lib/prisma';
 import { AuthRequest } from '../../middleware/auth';
 import { error, success } from '../../utils/response';
 import { enqueueJob } from '../../services/platform/job.service';
-import { findDuplicateLead, leadInclude, normalizeLeadRow, resolveLeadAssignee, titleFromLead, validateLead } from './shared';
+import { addMissingPhones, CLOSED_LEAD_STATUSES, findDuplicateLead, leadInclude, normalizeLeadRow, phoneRowsOf, QUALIFIED_LEAD_STATUSES, resolveLeadAssignee, titleFromLead, validateLead } from './shared';
 
 const companyId = (req: AuthRequest) => req.user?.companyId || '';
 const sha256 = (value: string) => crypto.createHash('sha256').update(value).digest('hex');
@@ -17,10 +17,11 @@ async function leadEvent(tx: any, req: AuthRequest, leadId: string, type: string
 
 export const checkDuplicateLead = async (req: AuthRequest, res: Response) => {
   const normalized = normalizeLeadRow(req.body);
+  const numbers = [...new Set([...(normalized.phoneList || []).map((phone) => phone.normalized), ...(normalized.phone ? [normalized.phone.replace(/\D/g, '')] : [])])];
   const matches = await prisma.lead.findMany({
-    where: { companyId: companyId(req), mergedIntoId: null, OR: [
+    where: { companyId: companyId(req), mergedIntoId: null, status: { notIn: CLOSED_LEAD_STATUSES as any }, OR: [
       ...(normalized.email ? [{ normalizedEmail: normalized.email }] : []),
-      ...(normalized.phone ? [{ normalizedPhone: normalized.phone.replace(/\D/g, '') }] : []),
+      ...(numbers.length ? [{ normalizedPhone: { in: numbers } }, { phones: { some: { normalized: { in: numbers } } } }] : []),
     ] },
     select: { id: true, title: true, firstName: true, lastName: true, company: true, email: true, phone: true, status: true, assignedToId: true },
     take: 10,
@@ -44,6 +45,8 @@ export const mergeLeads = async (req: AuthRequest, res: Response) => {
     await tx.crmCommunication.updateMany({ where: { leadId: { in: sourceIds } }, data: { leadId: target.id } });
     await tx.crmLeadEvent.updateMany({ where: { leadId: { in: sourceIds } }, data: { leadId: target.id } });
     await tx.attachment.updateMany({ where: { companyId: companyId(req), entityType: 'LEAD', entityId: { in: sourceIds } }, data: { entityId: target.id } });
+    const sourcePhones = await tx.crmPhone.findMany({ where: { leadId: { in: sourceIds } }, orderBy: { createdAt: 'asc' } });
+    await addMissingPhones(tx, { leadId: target.id }, companyId(req), phoneRowsOf(sourcePhones).map((phone) => ({ ...phone, isPrimary: false })));
     await tx.lead.updateMany({ where: { id: { in: sourceIds } }, data: { mergedIntoId: target.id, status: 'UNQUALIFIED' } });
     await leadEvent(tx, req, target.id, 'MERGE', 'Leads merged', { sourceLeadIds: sourceIds });
     return tx.lead.findUnique({ where: { id: target.id }, include: leadInclude });
@@ -155,7 +158,8 @@ export const captureLead = async (req: Request, res: Response) => {
   const invalid = validateLead(normalized); if (invalid) return error(res, invalid, 400);
   const duplicate = await findDuplicateLead(prisma, { ...normalized, companyId: token.companyId }); if (duplicate) return success(res, { duplicate: true, leadId: duplicate.id }, 'Lead already captured');
   const assignedToId = await resolveLeadAssignee(prisma, normalized, token.companyId, null);
-  const lead = await prisma.lead.create({ data: { ...normalized, normalizedEmail: normalized.email, normalizedPhone: normalized.phone?.replace(/\D/g, ''), title: titleFromLead(normalized), companyId: token.companyId, createdById: token.createdById, assignedToId } });
+  const { phoneList, phoneError: _phoneError, territory: _territory, ...leadFields } = normalized;
+  const lead = await prisma.lead.create({ data: { ...leadFields, normalizedEmail: normalized.email, normalizedPhone: normalized.phone?.replace(/\D/g, ''), title: titleFromLead(normalized), companyId: token.companyId, createdById: token.createdById, assignedToId, phones: { create: phoneList.map((phone) => ({ companyId: token.companyId, number: phone.number, normalized: phone.normalized, type: phone.type, isPrimary: phone.isPrimary })) } } as any });
   await prisma.crmCaptureToken.update({ where: { id: token.id }, data: { lastUsedAt: new Date() } });
   return success(res, lead, 'Lead captured', 201);
 };
@@ -177,7 +181,7 @@ export const crmReport = async (req: AuthRequest, res: Response) => {
   const [leads, opportunities, activities] = await Promise.all([prisma.lead.findMany({ where: { companyId: company, mergedIntoId: null } }), prisma.opportunity.findMany({ where: { companyId: company } }), prisma.activity.findMany({ where: { companyId: company } })]);
   const countBy = (rows: any[], key: string) => Object.entries(rows.reduce((a: any, r: any) => { const k = r[key] || 'UNSPECIFIED'; a[k] = (a[k] || 0) + 1; return a; }, {})).map(([name, count]) => ({ name, count }));
   const reports: any = {
-    summary: { leads: leads.length, qualified: leads.filter((x) => ['QUALIFIED', 'CONVERTED'].includes(x.status)).length, openPipeline: opportunities.filter((x) => !x.stage.startsWith('CLOSED')).reduce((s, x) => s + x.value, 0), wonValue: opportunities.filter((x) => x.stage === 'CLOSED_WON').reduce((s, x) => s + x.value, 0), overdueActivities: activities.filter((x) => x.dueDate && x.dueDate < new Date() && !['COMPLETED', 'CANCELLED'].includes(x.status)).length },
+    summary: { leads: leads.length, qualified: leads.filter((x) => QUALIFIED_LEAD_STATUSES.includes(x.status)).length, openPipeline: opportunities.filter((x) => !x.stage.startsWith('CLOSED')).reduce((s, x) => s + x.value, 0), wonValue: opportunities.filter((x) => x.stage === 'CLOSED_WON').reduce((s, x) => s + x.value, 0), overdueActivities: activities.filter((x) => x.dueDate && x.dueDate < new Date() && !['COMPLETED', 'CANCELLED'].includes(x.status)).length },
     funnel: countBy(leads, 'status'), sources: countBy(leads, 'source'), campaigns: countBy(leads, 'campaign'), ageing: leads.map((x) => ({ id: x.id, title: x.title, ageDays: Math.floor((Date.now() - x.createdAt.getTime()) / 86400000), status: x.status })),
     forecast: opportunities.map((x) => ({ id: x.id, title: x.title, stage: x.stage, value: x.value, probability: x.probability, weightedValue: x.value * x.probability / 100, expectedClose: x.expectedClose, forecastCategory: x.forecastCategory })),
     losses: countBy([...leads.filter((x) => x.lostReason), ...opportunities.filter((x) => x.lostReason)], 'lostReason'),

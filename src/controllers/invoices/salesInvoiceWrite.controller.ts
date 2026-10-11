@@ -65,6 +65,14 @@ export const createInvoiceFromSalesOrder = async (req: Request, res: Response) =
       if (!order) throw new Error('Sales order not found');
       if (order.status === 'DRAFT' || order.status === 'CANCELLED') throw new Error('Only confirmed sales orders can be invoiced');
 
+      // A double click sends two requests: one at a time per order, and a draft that is already waiting for
+      // this order is returned instead of making a second one. Invoicing part of the order is still allowed.
+      await tx.$executeRawUnsafe('SELECT pg_advisory_xact_lock(hashtext($1))', `invoice-from-order:${order.id}`);
+      if (!(req.body.items || []).length) {
+        const waiting = await tx.salesInvoice.findFirst({ where: { salesOrderId: order.id, status: 'DRAFT' }, include: invoiceInclude, orderBy: { createdAt: 'desc' } });
+        if (waiting) return waiting;
+      }
+
       const invoiceNo = await nextDocumentNo(tx, 'SALES_INVOICE');
       const requested = new Map((req.body.items || []).map((i: any) => [i.salesOrderItemId || i.id, new Prisma.Decimal(i.quantity)]));
       const sourceItems = order.items.map((item: any) => ({

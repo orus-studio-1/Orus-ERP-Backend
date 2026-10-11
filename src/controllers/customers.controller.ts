@@ -1,10 +1,11 @@
-﻿import { Request, Response } from 'express';
+import { Request, Response } from 'express';
 import prisma from '../lib/prisma';
 import { success, paginated, error } from '../utils/response';
 import { handlePrismaError } from '../utils/prismaError';
 import { generateCustomerNo } from '../utils/generate';
 import { serializeInvoice, serializeMoney } from '../utils/invoice';
 import { pickDefined } from '../utils/payload';
+import { computeCustomerPriority, emptyPriority, tierRank } from '../services/crm/customerPriority.service';
 
 const customerFields = ['name', 'email', 'phone', 'contactId', 'address', 'city', 'state', 'country', 'zip', 'taxId', 'currency', 'creditLimit', 'paymentTerms', 'notes', 'isActive'] as const;
 
@@ -21,17 +22,40 @@ export const getCustomers = async (req: Request, res: Response) => {
       { customerNo: { contains: search, mode: 'insensitive' } },
     ];
 
+    // Tier, won deals and billing come from computeCustomerPriority. Sorting or filtering by them needs
+    // every customer's figures, so that path ranks in memory and then pages the result.
+    const { sort, tier, source, overdue } = req.query as any;
+    const priority = await computeCustomerPriority();
+    const withPriority = (items: any[]) => items.map((item) => ({ ...item, priority: priority.get(item.id) || emptyPriority() }));
+    const include = { _count: { select: { salesOrders: true, invoices: true } } };
+
+    if (sort === 'priority' || tier || source || overdue === 'true') {
+      const candidates = await prisma.customer.findMany({ where, select: { id: true, createdAt: true } });
+      const wantedTier = String(tier || '').toUpperCase();
+      const matching = candidates
+        .filter((row) => {
+          const entry = priority.get(row.id) || emptyPriority();
+          if (wantedTier && (wantedTier === 'NONE' ? entry.tier !== null : entry.tier !== wantedTier)) return false;
+          if (source && (source === 'DIRECT' ? entry.source !== null : entry.source !== source)) return false;
+          if (overdue === 'true' && entry.overdueInvoices === 0) return false;
+          return true;
+        })
+        .sort((x, y) => {
+          const a1 = priority.get(x.id) || emptyPriority();
+          const b1 = priority.get(y.id) || emptyPriority();
+          return tierRank(a1.tier) - tierRank(b1.tier) || b1.score - a1.score || y.createdAt.getTime() - x.createdAt.getTime();
+        });
+      const ids = matching.slice((page - 1) * limit, page * limit).map((row) => row.id);
+      const rows = await prisma.customer.findMany({ where: { id: { in: ids } }, include });
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      return paginated(res, withPriority(ids.map((id) => byId.get(id)).filter(Boolean) as any[]), matching.length, page, limit);
+    }
+
     const [items, total] = await Promise.all([
-      prisma.customer.findMany({
-        where,
-        include: { _count: { select: { salesOrders: true, invoices: true } } },
-        orderBy: { createdAt: 'desc' },
-        skip: (page - 1) * limit,
-        take: limit,
-      }),
+      prisma.customer.findMany({ where, include, orderBy: { createdAt: 'desc' }, skip: (page - 1) * limit, take: limit }),
       prisma.customer.count({ where }),
     ]);
-    return paginated(res, items, total, page, limit);
+    return paginated(res, withPriority(items), total, page, limit);
   } catch (err: any) {
     return handlePrismaError(res, err);
   }
@@ -48,7 +72,13 @@ export const getCustomer = async (req: Request, res: Response) => {
       },
     });
     if (!customer) return error(res, 'Customer not found', 404);
-    return success(res, customer);
+    // Where the customer came from and the deals that were won, for the "customer story" card.
+    const priority = (await computeCustomerPriority()).get(customer.id) || emptyPriority();
+    const [lead, wonDeals] = await Promise.all([
+      priority.leadId ? prisma.lead.findFirst({ where: { id: priority.leadId }, select: { id: true, title: true, source: true, createdAt: true } }) : null,
+      prisma.opportunity.findMany({ where: { customerId: customer.id, stage: 'CLOSED_WON' }, orderBy: { wonAt: 'desc' }, take: 100, select: { id: true, title: true, value: true, currency: true, wonAt: true, contact: { select: { id: true, firstName: true, lastName: true } } } }),
+    ]);
+    return success(res, { ...customer, priority, story: { lead, wonDeals } });
   } catch (err: any) {
     return handlePrismaError(res, err);
   }
