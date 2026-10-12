@@ -8,13 +8,14 @@ import { generatePONo } from '../../utils/generate';
 import { documentTotals, nextNo } from '../../services/procurement/procurement.service';
 import { runThreeWayMatch } from '../../services/procurement/matching.service';
 import { postStockLedger } from '../../services/inventory/stockLedger.service';
+import { recordAuditEvent, setAuditContext } from '../../middleware/platform';
 
 const D = Prisma.Decimal;
 const actor = (req: Request) => (req as any).user || {};
 const companyId = (req: Request) => actor(req).companyId || undefined;
 const tenantId = (req: Request) => actor(req).tenantId;
 const code = (prefix: string) => `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-const audit = (tx: any, req: Request, data: any) => tx.procurementAuditEvent.create({ data: { companyId: companyId(req), actorId: actor(req).id, ...data } });
+const audit = (tx: any, req: Request, data: any) => recordAuditEvent(tx, req, data);
 
 async function approval(tx: any, req: Request, documentType: string, documentId: string) {
   if (!tenantId(req)) return undefined;
@@ -67,14 +68,68 @@ export async function rfqOperation(req: Request, res: Response) {
   } catch (e: any) { return error(res, e.message || 'RFQ operation failed', 400); }
 }
 
+// The vendor portal is public (no session), so these audit events carry their own tenant and company.
+async function vendorAuditScope(companyId?: string | null) {
+  const company = companyId ? await prisma.company.findUnique({ where: { id: companyId }, select: { tenantId: true } }) : null;
+  return { companyId: companyId || undefined, tenantId: company?.tenantId || undefined };
+}
+
+// A portal token that matches nothing is a 404; any other database failure must not be reported to
+// the vendor as an invalid link.
+const isNotFound = (err: any) => err?.code === 'P2025';
+
 export async function acknowledgeRfq(req: Request, res: Response) {
-  try { const supplier = await prisma.requestForQuotationSupplier.update({ where: { portalToken: req.params.token }, data: { status: req.body.accepted === false ? 'DECLINED' : 'RESPONDED', acknowledgedAt: new Date(), respondedAt: new Date(), acknowledgement: req.body.message } }); return success(res, supplier, 'RFQ acknowledgement recorded'); }
-  catch { return error(res, 'Invalid RFQ portal token', 404); }
+  let supplier: any;
+  try { supplier = await prisma.requestForQuotationSupplier.update({ where: { portalToken: req.params.token }, data: { status: req.body.accepted === false ? 'DECLINED' : 'RESPONDED', acknowledgedAt: new Date(), respondedAt: new Date(), acknowledgement: req.body.message } }); }
+  catch (err) {
+    if (isNotFound(err)) return error(res, 'Invalid RFQ portal token', 404);
+    console.error('RFQ acknowledgement failed:', err);
+    return error(res, 'Unable to record the acknowledgement, please try again', 500);
+  }
+  try {
+    const rfq = await prisma.requestForQuotation.findUnique({ where: { id: supplier.rfqId }, select: { companyId: true, rfqNo: true } });
+    const declined = req.body.accepted === false;
+    setAuditContext(req, {
+      entityType: 'RFQ', entityId: supplier.rfqId, rfqId: supplier.rfqId,
+      action: declined ? 'VENDOR_DECLINED' : 'VENDOR_ACKNOWLEDGED', statusAfter: supplier.status,
+      message: `Vendor ${declined ? 'declined' : 'acknowledged'} ${rfq?.rfqNo || 'RFQ'}${req.body.message ? `: ${req.body.message}` : ''}`,
+      after: { supplierId: supplier.supplierId, status: supplier.status },
+      ...(await vendorAuditScope(rfq?.companyId)),
+    });
+  } catch (err) { console.error('Unable to queue vendor RFQ audit event:', err); }
+  return success(res, supplier, 'RFQ acknowledgement recorded');
 }
 
 export async function acknowledgePurchaseOrder(req: Request, res: Response) {
-  try { const po = await prisma.purchaseOrder.update({ where: { publicToken: req.params.token }, data: { acknowledgedAt: new Date(), vendorAcknowledgement: req.body.message, status: req.body.accepted === false ? 'CANCELLED' : 'CONFIRMED' } }); return success(res, po, 'Purchase order acknowledgement recorded'); }
-  catch { return error(res, 'Invalid purchase-order token', 404); }
+  const declined = req.body.accepted === false;
+  const token = req.params.token;
+  let po: any; let statusBefore: string | undefined;
+  try {
+    const current = await prisma.purchaseOrder.findUnique({ where: { publicToken: token }, select: { status: true } });
+    if (!current) return error(res, 'Invalid purchase-order token', 404);
+    // Compare-and-set on the status that was read: if another acknowledgement got in first the update
+    // matches nothing, so the logged "before" status can never be stale.
+    const updated = await prisma.purchaseOrder.updateMany({
+      where: { publicToken: token, status: current.status },
+      data: { acknowledgedAt: new Date(), vendorAcknowledgement: req.body.message, status: declined ? 'CANCELLED' : 'CONFIRMED' },
+    });
+    if (updated.count === 0) return error(res, 'This purchase order was just updated, please refresh and try again', 409);
+    statusBefore = current.status;
+    po = await prisma.purchaseOrder.findUnique({ where: { publicToken: token } });
+    if (!po) return error(res, 'Invalid purchase-order token', 404);
+  } catch (err) {
+    console.error('Purchase-order acknowledgement failed:', err);
+    return error(res, 'Unable to record the acknowledgement, please try again', 500);
+  }
+  try {
+    setAuditContext(req, {
+      entityType: 'PURCHASE_ORDER', entityId: po.id, rfqId: po.rfqId || undefined,
+      action: declined ? 'VENDOR_DECLINED' : 'VENDOR_ACKNOWLEDGED', statusBefore, statusAfter: po.status,
+      message: `Vendor ${declined ? 'declined' : 'acknowledged'} ${po.orderNo}${req.body.message ? `: ${req.body.message}` : ''}`,
+      ...(await vendorAuditScope(po.companyId)),
+    });
+  } catch (err) { console.error('Unable to queue vendor purchase-order audit event:', err); }
+  return success(res, po, 'Purchase order acknowledgement recorded');
 }
 
 export async function reviseSupplierQuotation(req: Request, res: Response) {

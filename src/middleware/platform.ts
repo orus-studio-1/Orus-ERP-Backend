@@ -1,11 +1,23 @@
 import { NextFunction, Request, Response } from 'express';
 import crypto from 'crypto';
+import { Prisma } from '@prisma/client';
 import prisma from '../lib/prisma';
-import { AuthRequest } from './auth';
+import type { AuthRequest } from './auth';
 import { error } from '../utils/response';
 
 const mutationMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const sensitiveKeys = new Set(['password', 'currentPassword', 'newPassword', 'token', 'accessToken', 'refreshToken', 'authorization', 'credentialsEncrypted', 'uploadUrl', 'downloadUrl', 'signedUrl', 'presignedUrl']);
+// Any key that looks like a secret, hash, key material or one-time code is redacted from audit JSON.
+const sensitiveKeyPattern = /password|passwd|secret|token|credential|hash|api[-_]?key|private[-_]?key|storage[-_]?key|otp|recovery/i;
+// Personal / financial identifiers are redacted too (matched on the exact column name so that e.g.
+// "company" or "panAvailable" are untouched).
+const sensitiveExactKeyPattern = /^(pan|taxId|bankAccount|accountNumber|ifsc|iban|aadhaar|aadhar|ssn|cvv|cardNumber)$/i;
+// Models whose rows are credentials/sessions are never snapshotted into an audit row at all: the
+// explicit names below plus anything whose model name looks like a session/token/key/secret store.
+const snapshotDenylist = new Set(['webhookSubscription', 'crmIntegrationAccount']);
+const credentialModelPattern = /session|token|apikey|credential|secret|recovery/i;
+const isSnapshotDenied = (delegate: string) => snapshotDenylist.has(delegate) || credentialModelPattern.test(delegate);
+const warnedUnresolved = new Set<string>();
 const auditDelegates: Record<string, string> = {
   'accounting:accounts': 'account', 'crm:leads': 'lead', 'crm:organizations': 'organization', 'crm:contacts': 'contact', 'crm:opportunities': 'opportunity', 'crm:activities': 'activity',
   'customers:request': 'customer', 'suppliers:request': 'supplier', 'projects:request': 'project',
@@ -14,23 +26,143 @@ const auditDelegates: Record<string, string> = {
   'invoices:request': 'salesInvoice', 'invoicing:sales-invoices': 'salesInvoice', 'delivery-notes:request': 'deliveryNote',
   'hr:employees': 'employee', 'hr:departments': 'department', 'hr:positions': 'position',
   'procurement:material-requests': 'materialRequest', 'procurement:rfqs': 'requestForQuotation', 'procurement:purchase-orders': 'purchaseOrder', 'procurement:purchase-receipts': 'purchaseReceipt', 'procurement:purchase-invoices': 'purchaseInvoice',
+  // Resources whose Prisma model name does not follow from the route name.
+  'access:roles': 'accessRole', 'accounting:recurring-journals': 'recurringJournalEntry',
+  'crm:assignment-rules': 'crmAssignmentRule', 'crm:saved-views': 'crmSavedView', 'crm:scope-rules': 'crmScopeRule', 'crm:lost-reasons': 'crmLostReason', 'crm:email-templates': 'crmEmailTemplate', 'crm:communications': 'crmCommunication', 'crm:integrations': 'crmIntegrationAccount', 'crm:capture-tokens': 'crmCaptureToken',
+  'hr:lifecycle-events': 'employeeLifecycleEvent',
+  'inventory:reconciliations': 'stockReconciliation', 'inventory:attributes': 'productAttribute', 'inventory:uom-conversions': 'productUomConversion', 'inventory:transfer-orders': 'stockTransferOrder',
+  'invoicing:invoices': 'salesInvoice', 'invoicing:subscriptions': 'subscriptionTemplate', 'payments:entries': 'paymentEntry',
+  'manufacturing:work-orders': 'manufacturingWorkOrder', 'sales:production-plans': 'salesProductionPlan',
+  'procurement:three-way-matches': 'procurementThreeWayMatch', 'procurement:vendor-ratings': 'vendorRatingHistory', 'procurement:communications': 'supplierCommunicationLog',
 };
 
+// POST /module/resource/:id/<operation> acts on an existing record, so it also gets a "before" snapshot.
+export const documentOperations = new Set(['submit', 'cancel', 'amend', 'approve', 'reject', 'convert', 'complete', 'dispatch', 'receive', 'post', 'close', 'reopen', 'revise', 'status', 'win', 'lose', 'qualify', 'assign', 'merge', 'stage', 'mark-lost', 'send', 'confirm', 'accept', 'release', 'start', 'pause', 'resume', 'finish', 'issue', 'reverse', 'return']);
+
+// "journal-entries" -> "journalEntry", "leave-requests" -> "leaveRequest"
+function singularCamel(resource: string) {
+  const parts = resource.split('-');
+  const last = parts.pop() || '';
+  const singular = last.endsWith('ies') ? `${last.slice(0, -3)}y` : /(ch|sh|x|z|ss)es$/.test(last) ? last.slice(0, -2) : last.endsWith('s') && !last.endsWith('ss') ? last.slice(0, -1) : last;
+  return [...parts, singular].map((word, index) => (index === 0 ? word : word.charAt(0).toUpperCase() + word.slice(1))).join('');
+}
+
+// Explicit entries in auditDelegates win; every other resource is resolved from its route name when
+// a Prisma model of that name exists, so new modules get "before" snapshots without being listed.
+const resolvedDelegates = new Map<string, string | null>();
+export function auditDelegateFor(moduleName: string, resource: string): string | undefined {
+  const key = `${moduleName}:${resource}`;
+  if (auditDelegates[key]) return auditDelegates[key];
+  if (!resolvedDelegates.has(key)) {
+    const candidate = resource === 'request' ? '' : singularCamel(resource);
+    resolvedDelegates.set(key, candidate && typeof (prisma as any)[candidate]?.findUnique === 'function' ? candidate : null);
+  }
+  return resolvedDelegates.get(key) || undefined;
+}
+
+function parseAuditPath(rawPath: string, method: string) {
+  const pathParts = rawPath.split('?')[0].split('/').filter(Boolean);
+  if (pathParts[0] === 'api') pathParts.shift();
+  if (pathParts[0] === 'v1') pathParts.shift();
+  const moduleName = pathParts[0] || 'system';
+  const rootResource = ['customers', 'suppliers', 'projects', 'invoices', 'delivery-notes'].includes(moduleName);
+  const resource = rootResource ? 'request' : pathParts[1] || 'request';
+  const candidateId = pathParts[rootResource ? 1 : 2];
+  // A POST is an action on an existing record only when it has exactly the shape
+  // /module/resource/:id/<verb> (or /module/:id/<verb> for root resources). A collection-level
+  // POST such as /module/resource/start or /module/resource/:id/items/status is a plain create.
+  const operationIndex = rootResource ? 2 : 3;
+  const candidateOperation = pathParts.length === operationIndex + 1 ? pathParts[operationIndex].toLowerCase() : undefined;
+  const operation = candidateOperation && documentOperations.has(candidateOperation) ? candidateOperation : undefined;
+  const pathEntityId = ['PUT', 'PATCH', 'DELETE'].includes(method) || (method === 'POST' && operation) ? candidateId : undefined;
+  return { moduleName, resource, pathEntityId, operation: method === 'POST' ? operation : undefined };
+}
+
+// Called by authenticate() once the user is verified and the tenant context is active, so the
+// "before" read only happens for real, authorised sessions and is scoped to their tenant/company
+// (the tenant extension scopes findFirst, not findUnique). The row is stored on req.auditBefore
+// and picked up by mutationAudit when the response is sent.
+export async function captureBeforeSnapshot(req: AuthRequest) {
+  const flags = req as any;
+  if (flags.auditBeforeDone || !mutationMethods.has(req.method)) return;
+  flags.auditBeforeDone = true;
+  const { moduleName, resource, pathEntityId } = parseAuditPath(req.originalUrl, req.method);
+  if (!pathEntityId || moduleName === 'auth') return;
+  const delegateName = auditDelegateFor(moduleName, resource);
+  if (!delegateName) {
+    if (!warnedUnresolved.has(`${moduleName}:${resource}`)) {
+      warnedUnresolved.add(`${moduleName}:${resource}`);
+      console.warn(`[audit] no Prisma model resolved for ${moduleName}:${resource}; "before" snapshots are skipped for it (add it to auditDelegates if it is a record).`);
+    }
+    return;
+  }
+  if (isSnapshotDenied(delegateName) || !(prisma as any)[delegateName]?.findFirst) return;
+  try { flags.auditBefore = await (prisma as any)[delegateName].findFirst({ where: { id: pathEntityId } }); }
+  catch { flags.auditBefore = undefined; }
+}
+
+const NUL = /\u0000/g;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function cleanText(value: unknown, max: number): string | undefined {
+  if (value == null) return undefined;
+  const text = String(value).replace(NUL, '');
+  return text.length > max ? text.slice(0, max) : text;
+}
+
+// tenantId and branchId are uuid columns: anything else would make the insert fail.
+function cleanUuid(value: unknown, field: string): string | undefined {
+  if (value == null || value === '') return undefined;
+  const text = String(value);
+  if (UUID_PATTERN.test(text)) return text;
+  console.warn(`[audit] ignoring ${field} that is not a uuid: ${text.slice(0, 60)}`);
+  return undefined;
+}
+
+// Last step before a row reaches the database. The audit insert can now run inside a business
+// transaction, so a malformed value must never be able to make it fail (and abort the business
+// change): every column is coerced to something Postgres is guaranteed to accept.
+function toSafeAuditRow(row: Record<string, any>) {
+  return {
+    ...row,
+    tenantId: cleanUuid(row.tenantId, 'tenantId'),
+    branchId: cleanUuid(row.branchId, 'branchId'),
+    companyId: cleanText(row.companyId, 200),
+    userId: cleanText(row.userId, 200),
+    actorEmail: cleanText(row.actorEmail, 320),
+    actorRole: cleanText(row.actorRole, 100),
+    entityType: cleanText(row.entityType, 200) || 'UNKNOWN',
+    entityId: cleanText(row.entityId, 200),
+    action: cleanText(row.action, 100) || 'UNKNOWN',
+    statusBefore: cleanText(row.statusBefore, 100),
+    statusAfter: cleanText(row.statusAfter, 100),
+    message: cleanText(row.message, 2000),
+    targetUserId: cleanText(row.targetUserId, 200),
+    targetRoleId: cleanText(row.targetRoleId, 200),
+    rfqId: cleanText(row.rfqId, 200),
+    ip: cleanText(row.ip, 100),
+    userAgent: cleanText(row.userAgent, 500),
+    requestId: cleanText(row.requestId, 200),
+  };
+}
+
 function sanitizeAuditValue(value: any, depth = 0): any {
-  if (value == null || typeof value === 'boolean' || typeof value === 'number') return value;
-  if (typeof value === 'string') return value.length > 1000 ? `${value.slice(0, 1000)}…` : value;
+  if (value == null || typeof value === 'boolean') return value;
+  // NaN / Infinity are not valid JSON numbers, so they are stored as text instead.
+  if (typeof value === 'number') return Number.isFinite(value) ? value : String(value);
+  // Postgres rejects the NUL character in both text and JSON, so it is removed from every string.
+  if (typeof value === 'string') { const text = value.replace(NUL, ''); return text.length > 1000 ? `${text.slice(0, 1000)}…` : text; }
   if (value instanceof Date) return value.toISOString();
   if (typeof value?.toJSON === 'function') return sanitizeAuditValue(value.toJSON(), depth);
   if (depth >= 5) return '[TRUNCATED]';
   if (Array.isArray(value)) return value.slice(0, 100).map(item => sanitizeAuditValue(item, depth + 1));
-  if (typeof value === 'object') return Object.fromEntries(Object.entries(value).slice(0, 100).map(([key, item]) => [key, sensitiveKeys.has(key) || /password|token|secret|credential/i.test(key) ? '[REDACTED]' : sanitizeAuditValue(item, depth + 1)]));
+  if (typeof value === 'object') return Object.fromEntries(Object.entries(value).slice(0, 100).map(([key, item]) => [key.replace(NUL, ''), sensitiveKeys.has(key) || sensitiveKeyPattern.test(key) || sensitiveExactKeyPattern.test(key) ? '[REDACTED]' : sanitizeAuditValue(item, depth + 1)]));
   return String(value);
 }
 
 function auditAction(req: Request) {
-  const segments = req.path.split('/').filter(Boolean);
-  const operation = segments[segments.length - 1]?.toUpperCase();
-  if (operation && ['SUBMIT', 'CANCEL', 'AMEND', 'APPROVE', 'REJECT', 'CONVERT', 'POST', 'COMPLETE', 'DISPATCH', 'RECEIVE'].includes(operation)) return operation;
+  const { operation } = parseAuditPath(req.originalUrl || req.path, req.method);
+  if (operation) return operation.toUpperCase().replace(/-/g, '_');
   return req.method === 'POST' ? 'CREATE' : req.method === 'DELETE' ? 'DELETE' : 'UPDATE';
 }
 
@@ -48,17 +180,35 @@ export async function idempotency(req: AuthRequest, res: Response, next: NextFun
   const tenantId = req.user?.tenantId;
   if (!tenantId) return error(res, 'Tenant context is required', 403, undefined, 'TENANT_REQUIRED');
   const requestHash = crypto.createHash('sha256').update(JSON.stringify({ method: req.method, path: req.originalUrl, body: req.body })).digest('hex');
-  const existing = await prisma.idempotencyRecord.findUnique({ where: { tenantId_key: { tenantId, key } } });
-  if (existing) {
+  const recordKey = { tenantId_key: { tenantId, key } };
+  const existing = await prisma.idempotencyRecord.findUnique({ where: recordKey });
+  // A key can be used again when its earlier attempt failed (5xx) or the record has expired.
+  const reusable = existing && (existing.state === 'FAILED' || existing.expiresAt.getTime() <= Date.now());
+  if (existing && !reusable) {
     if (existing.requestHash !== requestHash) return error(res, 'Idempotency key was used with a different request', 409, undefined, 'IDEMPOTENCY_CONFLICT');
-    if (existing.state === 'COMPLETED') return res.status(200).json(existing.responseBody);
+    if (existing.state === 'COMPLETED') {
+      // Replaying a stored response did not change anything, so it must not be audited again. The
+      // original status is kept, so a stored 400 is replayed as a 400 and not turned into a success.
+      res.locals.skipAudit = true;
+      return res.status(existing.statusCode ?? 200).json(existing.responseBody);
+    }
     return error(res, 'An identical request is already processing', 409, undefined, 'IDEMPOTENCY_IN_PROGRESS');
   }
-  await prisma.idempotencyRecord.create({ data: { tenantId, key, requestHash, method: req.method, path: req.originalUrl, expiresAt: new Date(Date.now() + 86400000) } });
+  const inProgress = () => error(res, 'An identical request is already processing', 409, undefined, 'IDEMPOTENCY_IN_PROGRESS');
+  const expiresAt = new Date(Date.now() + 86400000);
+  if (existing) {
+    // Only one of several concurrent retries may take the key over: the state it read must still be current.
+    const claimed = await prisma.idempotencyRecord.updateMany({ where: { tenantId, key, state: existing.state, expiresAt: existing.expiresAt }, data: { requestHash, method: req.method, path: req.originalUrl, state: 'PROCESSING', statusCode: null, responseBody: Prisma.DbNull, completedAt: null, expiresAt } });
+    if (!claimed.count) return inProgress();
+  } else {
+    try { await prisma.idempotencyRecord.create({ data: { tenantId, key, requestHash, method: req.method, path: req.originalUrl, expiresAt } }); }
+    // Two requests with the same new key can race: the loser hits the unique index instead of a 500.
+    catch (err: any) { if (err?.code === 'P2002') return inProgress(); throw err; }
+  }
   const originalJson = res.json.bind(res);
   res.json = ((body: any) => {
     const completed = res.statusCode < 500;
-    prisma.idempotencyRecord.update({ where: { tenantId_key: { tenantId, key } }, data: { state: completed ? 'COMPLETED' : 'FAILED', statusCode: res.statusCode, responseBody: body, completedAt: new Date() } }).catch(() => null);
+    prisma.idempotencyRecord.update({ where: recordKey, data: { state: completed ? 'COMPLETED' : 'FAILED', statusCode: res.statusCode, responseBody: body, completedAt: new Date() } }).catch(() => null);
     return originalJson(body);
   }) as any;
   next();
@@ -74,43 +224,156 @@ export function optimisticConcurrency(req: Request, res: Response, next: NextFun
   next();
 }
 
+// Queues a rich audit event (entityType/entityId/action/before/after/diff/message/statusBefore/
+// statusAfter/targetUserId/targetRoleId/rfqId/companyId/tenantId/userId) for mutationAudit below
+// to write when the response is sent. A request can touch more than one entity, so this queues
+// instead of overwriting -- each call adds one row. Business code must never write an audit row
+// directly; this is the only way to record one.
+export function setAuditContext(req: Request, patch: Record<string, any>) {
+  const events: Record<string, any>[] = (req as any).auditEvents || ((req as any).auditEvents = []);
+  events.push(patch);
+}
+
+// Builds one audit row from an explicit event plus whatever the request itself knows. Everything
+// the event does not state is derived from the route, the signed-in user and the request.
+function buildAuditRow(req: AuthRequest, context: Record<string, any>, responseData?: any) {
+  const { moduleName, resource, pathEntityId } = parseAuditPath(req.originalUrl || req.path, req.method);
+  const entityId = context.entityId || req.params?.id || pathEntityId || responseData?.id || responseData?.data?.id;
+  // The request carries one "before" snapshot (the record in the URL) and one response body. They
+  // describe a single record, so an event that explicitly names a different entity must not inherit
+  // them (e.g. amending an invoice also logs the new draft, which has no "before" of its own).
+  const explicitEntity = Boolean(context.entityId);
+  const snapshot = (req as any).auditBefore;
+  const responseId = responseData?.id ?? responseData?.data?.id;
+  const snapshotBelongsHere = snapshot !== undefined && (!explicitEntity || String(snapshot?.id) === String(context.entityId));
+  const responseBelongsHere = responseData !== undefined && (!explicitEntity || (responseId != null && String(responseId) === String(context.entityId)));
+  return toSafeAuditRow({
+    tenantId: context.tenantId ?? req.user?.tenantId ?? undefined,
+    companyId: context.companyId ?? req.user?.companyId,
+    branchId: context.branchId ?? req.user?.branchId ?? undefined,
+    userId: context.userId ?? req.user?.id,
+    actorEmail: context.actorEmail ?? req.user?.email,
+    actorRole: context.actorRole ?? req.user?.role,
+    entityType: context.entityType ? String(context.entityType) : `${moduleName}:${resource}`.toUpperCase(),
+    entityId: entityId ? String(entityId) : undefined,
+    action: context.action || auditAction(req),
+    statusBefore: context.statusBefore,
+    statusAfter: context.statusAfter,
+    message: context.message,
+    targetUserId: context.targetUserId,
+    targetRoleId: context.targetRoleId,
+    rfqId: context.rfqId,
+    before: context.before !== undefined ? sanitizeAuditValue(context.before) : snapshotBelongsHere ? sanitizeAuditValue(snapshot) : undefined,
+    diff: context.diff !== undefined ? sanitizeAuditValue(context.diff) : sanitizeAuditValue(req.body || {}),
+    after: context.after !== undefined ? sanitizeAuditValue(context.after) : responseBelongsHere ? sanitizeAuditValue(responseData) : undefined,
+    ip: req.ip,
+    userAgent: req.get('user-agent'),
+    requestId: req.context?.requestId,
+  });
+}
+
+// Records an audit event inside the caller's database transaction, so the audit row and the business
+// change commit or roll back together (an audit failure aborts the change instead of being lost).
+// Use this where a transaction already exists; setAuditContext covers everything else. It is still
+// the only place that writes an audit row. It remembers the row's id so mutationAudit can confirm the
+// transaction really committed before it skips the automatic row (the insert alone proves nothing: a
+// later statement can still roll the whole transaction back). The response is not known yet, so `after` is only stored if the event gives it.
+// It refuses anything that is not a transaction client: falling back to the global client would
+// silently make the write non-atomic, which is exactly what this function exists to prevent.
+export async function recordAuditEvent(tx: any, req: Request, event: Record<string, any>) {
+  // Only the root client exposes $connect; an interactive transaction client does not.
+  if (!tx || typeof tx.platformAuditLog?.create !== 'function' || typeof tx.$connect === 'function') {
+    throw new Error('recordAuditEvent must be called with a transaction client (prisma.$transaction(async (tx) => ...)); use setAuditContext when there is no transaction');
+  }
+  const row = buildAuditRow(req as AuthRequest, event);
+  const id = crypto.randomUUID();
+  await tx.platformAuditLog.create({ data: { id, ...row } });
+  ((req as any).auditTxEventIds ||= []).push(id);
+}
+
+// True only if every row written through recordAuditEvent survived: a rolled-back transaction leaves
+// none of them behind. A failed lookup counts as "not confirmed" so the automatic row is written
+// (a possible duplicate is better than a successful change with no audit entry).
+async function txEventsCommitted(ids: string[]) {
+  try { return (await prisma.platformAuditLog.count({ where: { id: { in: ids } } })) === ids.length; }
+  catch { return false; }
+}
+
 export async function mutationAudit(req: AuthRequest, res: Response, next: NextFunction) {
   if (!mutationMethods.has(req.method)) return next();
-  const pathParts = req.path.split('/').filter(Boolean);
-  if (pathParts[0] === 'api') pathParts.shift();
-  if (pathParts[0] === 'v1') pathParts.shift();
-  const moduleName = pathParts[0] || 'system';
-  const rootResource = ['customers', 'suppliers', 'projects', 'invoices', 'delivery-notes'].includes(moduleName);
-  const resource = rootResource ? 'request' : pathParts[1] || 'request';
-  const pathEntityId = ['PUT', 'PATCH', 'DELETE'].includes(req.method) ? pathParts[rootResource ? 1 : 2] : undefined;
-  let beforeSnapshot: any;
-  const delegateName = auditDelegates[`${moduleName}:${resource}`];
-  if (pathEntityId && delegateName && (prisma as any)[delegateName]?.findUnique) {
-    try { beforeSnapshot = await (prisma as any)[delegateName].findUnique({ where: { id: pathEntityId } }); }
-    catch { beforeSnapshot = undefined; }
-  }
+  const { moduleName } = parseAuditPath(req.path, req.method);
   const originalJson = res.json.bind(res);
   res.json = ((body: any) => {
-    if (req.user && res.statusCode >= 200 && res.statusCode < 400 && moduleName !== 'auth') {
+    const events: Record<string, any>[] = (req as any).auditEvents || [];
+    const hasAuditIntent = (Boolean(req.user) || events.length > 0) && !res.locals?.skipAudit;
+    if (hasAuditIntent && res.statusCode >= 200 && res.statusCode < 400 && moduleName !== 'auth') {
       const responseData = body?.data;
-      const entityId = req.params?.id || pathEntityId || responseData?.id || responseData?.data?.id;
-      prisma.platformAuditLog.create({ data: {
-        tenantId: req.user.tenantId || undefined,
-        companyId: req.user.companyId,
-        branchId: req.user.branchId || undefined,
-        userId: req.user.id,
-        entityType: `${moduleName}:${resource}`.toUpperCase(),
-        entityId: entityId ? String(entityId) : undefined,
-        action: auditAction(req),
-        before: sanitizeAuditValue(beforeSnapshot),
-        diff: sanitizeAuditValue(req.body || {}),
-        after: sanitizeAuditValue(responseData),
-        ip: req.ip,
-        userAgent: req.get('user-agent'),
-        requestId: req.context?.requestId,
-      } }).catch(error => console.error('Unable to write audit log:', error));
+      const txEventIds: string[] = (req as any).auditTxEventIds || [];
+      // The single automatic row (derived from the route) is written when nothing else covers the
+      // request: no queued events and no committed transaction event.
+      const rowsFor = (coveredByTransaction: boolean) =>
+        (events.length ? events : coveredByTransaction ? [] : [{}]).map((context) => buildAuditRow(req, context, responseData));
+      // The response is held until the audit rows are stored, so a failed write is never silent: it is
+      // retried once, and if it still fails the rows are logged for recovery and the client is warned
+      // with an X-Audit-Warning header (the business change itself is already committed by now).
+      // This runs after the controller has returned, so an error thrown while sending (an
+      // unserialisable body, headers already sent) can no longer reach the controller's own catch.
+      // Answer with a generic 500 instead of leaving the request open forever.
+      const sendResponse = () => {
+        try { originalJson(body); }
+        catch (err) {
+          console.error('Unable to send response after the audit write:', err);
+          if (res.headersSent) { res.end(); return; }
+          try { res.status(500); originalJson({ success: false, message: 'Internal server error' }); }
+          catch { res.end(); }
+        }
+      };
+      const store = (rows: Record<string, any>[]) => {
+        if (!rows.length) return sendResponse();
+        void writeAuditRows(rows).catch(() => false).then((stored) => {
+          if (!stored && !res.headersSent) res.setHeader('X-Audit-Warning', 'write-failed');
+          sendResponse();
+        });
+      };
+      if (!events.length && txEventIds.length) {
+        void txEventsCommitted(txEventIds).then((committed) => store(rowsFor(committed)));
+        return res;
+      }
+      const rows = rowsFor(false);
+      if (!rows.length) return originalJson(body);
+      store(rows);
+      return res;
     }
     return originalJson(body);
   }) as any;
   next();
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(Object.assign(new Error(`audit write timed out after ${ms}ms`), { isAuditTimeout: true })), ms);
+    promise.then((value) => { clearTimeout(timer); resolve(value); }, (err) => { clearTimeout(timer); reject(err); });
+  });
+}
+
+// AUDIT_WRITE_TIMEOUT_MS is the total time a response may wait for its audit rows (default 3s), not
+// per attempt. A quick failure is retried once inside that budget; a timeout is not retried, because
+// a database that is already stalled or out of connections would only be hit again and every write
+// endpoint would wait twice as long. Rows get their ids up front and are inserted with
+// skipDuplicates, so a retry (or a first insert that still completes after the timeout) can never
+// store the same event twice.
+async function writeAuditRows(rows: Record<string, any>[]) {
+  const budgetMs = Number(process.env.AUDIT_WRITE_TIMEOUT_MS) || 3000;
+  const deadline = Date.now() + budgetMs;
+  const data = rows.map((row) => ({ id: crypto.randomUUID(), ...row }));
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    try { await withTimeout(prisma.platformAuditLog.createMany({ data: data as any, skipDuplicates: true }), remaining); return true; }
+    catch (err) {
+      if (attempt === 2 || (err as any)?.isAuditTimeout) { console.error('AUDIT WRITE FAILED - rows for manual recovery:', err, JSON.stringify(data)); return false; }
+    }
+  }
+  console.error('AUDIT WRITE FAILED - rows for manual recovery: no time left in the write budget', JSON.stringify(data));
+  return false;
 }

@@ -1,9 +1,12 @@
 import { Prisma } from '@prisma/client';
 import { postStockLedger } from '../services/inventory/stockLedger.service';
 import { fulfillSalesOrderReservation } from '../services/inventory/reservation.service';
+import { recordAuditEvent } from '../middleware/platform';
 
 const D = Prisma.Decimal;
 
+// Records a document audit event inside the caller's transaction (through the central audit module),
+// so the audit row and the document change commit or roll back together.
 export async function audit(tx: any, req: any, input: {
   entityType: any;
   entityId: string;
@@ -16,15 +19,8 @@ export async function audit(tx: any, req: any, input: {
   deliveryNoteId?: string;
   creditNoteId?: string;
 }) {
-  if (!tx.auditLog) return null;
-  return tx.auditLog.create({
-    data: {
-      actorId: req?.user?.id,
-      actorEmail: req?.user?.email,
-      actorRole: req?.user?.role,
-      ...input,
-    },
-  });
+  const { entityType, invoiceId: _invoiceId, deliveryNoteId: _deliveryNoteId, creditNoteId: _creditNoteId, ...rest } = input;
+  await recordAuditEvent(tx, req, { entityType: String(entityType), ...rest });
 }
 
 export async function ensureAccount(tx: any, code: string, name: string, type: 'ASSET' | 'LIABILITY' | 'REVENUE' | 'EXPENSE' | 'EQUITY') {
