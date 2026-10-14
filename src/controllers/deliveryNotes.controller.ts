@@ -15,8 +15,14 @@ async function nextDeliveryNo(tx: any) {
       data: { documentType: 'DELIVERY_NOTE', name: 'DN-DEFAULT', pattern: `DN-${new Date().getFullYear()}-#####`, prefix: 'DN', digits: 5, isDefault: true },
     });
   }
-  const updated = await tx.numberingSeries.update({ where: { id: series.id }, data: { current: { increment: 1 } } });
-  return updated.pattern.replace('#'.repeat(updated.digits), String(updated.current).padStart(updated.digits, '0'));
+  // deliveryNo is unique across all companies while each company counts its own series, so a number
+  // already used elsewhere is skipped.
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const updated = await tx.numberingSeries.update({ where: { id: series.id }, data: { current: { increment: 1 } } });
+    const deliveryNo = updated.pattern.replace('#'.repeat(updated.digits), String(updated.current).padStart(updated.digits, '0'));
+    if (!(await tx.deliveryNote.findUnique({ where: { deliveryNo }, select: { id: true } }))) return deliveryNo;
+  }
+  throw new Error('Could not allocate a delivery note number');
 }
 
 const deliveryInclude = {

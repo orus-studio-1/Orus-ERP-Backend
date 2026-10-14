@@ -2064,6 +2064,7 @@ model CrmOrganization {
   zip       String?
   ownerId   String?
   owner     User?    @relation("CrmOrganizationOwner", fields: [ownerId], references: [id])
+  territory String?
   notes     String?
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
@@ -2073,6 +2074,7 @@ model CrmOrganization {
   contacts      Contact[]
   opportunities Opportunity[]
   activities    Activity[]
+  phones        CrmPhone[]
 
   @@index([companyId, name])
   @@index([ownerId])
@@ -2089,12 +2091,13 @@ model Lead {
   normalizedEmail String?
   normalizedPhone String?
   company         String?
+  jobTitle        String?
   city            String?
   country         String?
   organizationId  String?
   organization    CrmOrganization? @relation(fields: [organizationId], references: [id])
   source          LeadSource       @default(OTHER)
-  status          LeadStatus       @default(NEW)
+  status          LeadStatus       @default(LEAD)
   priority        Priority         @default(MEDIUM)
   value           Float?
   score           Int              @default(0)
@@ -2122,6 +2125,7 @@ model Lead {
   activities  Activity[]
   contacts    Contact[]
   opportunity Opportunity?
+  phones      CrmPhone[]
 
   @@index([status, source])
   @@index([assignedToId, status])
@@ -2174,11 +2178,16 @@ enum LeadSource {
 }
 
 enum LeadStatus {
-  NEW
-  CONTACTED
-  QUALIFIED
-  UNQUALIFIED
+  LEAD
+  OPEN
+  REPLIED
+  OPPORTUNITY
+  QUOTATION
+  LOST_QUOTATION
+  INTERESTED
   CONVERTED
+  DO_NOT_CONTACT
+  UNQUALIFIED
 }
 
 enum Priority {
@@ -2269,6 +2278,7 @@ model Contact {
   activities    Activity[]
   opportunities Opportunity[]
   customers     Customer[]
+  phones        CrmPhone[]
 
   @@index([email])
   @@index([phone])
@@ -2493,6 +2503,44 @@ model CrmLostReason {
 
   @@unique([companyId, name, appliesTo])
   @@index([companyId, isActive, sortOrder])
+}
+
+// Managed territory list (Lead, Organization, Customer and assignment rules store the territory name).
+model CrmTerritory {
+  id        String   @id @default(cuid())
+  companyId String
+  name      String
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(100)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([companyId, name])
+  @@index([companyId, isActive, sortOrder])
+}
+
+// Several phone numbers per lead, contact or organization. `number` is what the user typed,
+// `normalized` is digits only (used for duplicate checks). One number is primary; it is mirrored
+// on Lead.phone / Contact.phone / CrmOrganization.phone so the single-phone code keeps working.
+model CrmPhone {
+  id             String           @id @default(cuid())
+  companyId      String?
+  leadId         String?
+  lead           Lead?            @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  contactId      String?
+  contact        Contact?         @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  organizationId String?
+  organization   CrmOrganization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  number         String
+  normalized     String
+  type           String           @default("MOBILE")
+  isPrimary      Boolean          @default(false)
+  createdAt      DateTime         @default(now())
+
+  @@index([companyId, normalized])
+  @@index([leadId])
+  @@index([contactId])
+  @@index([organizationId])
 }
 
 model CrmLeadEvent {

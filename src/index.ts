@@ -54,6 +54,9 @@ app.use(morgan('dev'));
 app.use(cookieParser());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+// Express 5 leaves req.body undefined for a request that sends no body (a POST with only an id in the URL,
+// like creating a delivery or an invoice from a sales order), so handlers reading req.body.items crashed.
+app.use((req, _res, next) => { req.body ??= {}; next(); });
 app.use(requestContext);
 app.use(mutationAudit);
 

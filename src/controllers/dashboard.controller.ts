@@ -4,6 +4,7 @@ import { success } from '../utils/response';
 import { handlePrismaError } from '../utils/prismaError';
 import { serializeInvoice, serializeMoney } from '../utils/invoice';
 import { AuthRequest } from '../middleware/auth';
+import { OPEN_LEAD_STATUSES } from './crm/shared';
 
 export const getDashboardStats = async (req: Request, res: Response) => {
   try {
@@ -59,7 +60,7 @@ export const getDashboardStats = async (req: Request, res: Response) => {
       }),
       prisma.customer.count({ where: { isActive: true } }),
       prisma.employee.count({ where: { status: 'ACTIVE' } }),
-      prisma.lead.count({ where: { status: { in: ['NEW', 'CONTACTED', 'QUALIFIED'] } } }),
+      prisma.lead.count({ where: { status: { in: OPEN_LEAD_STATUSES as any } } }),
       prisma.task.count({ where: { status: { in: ['TODO', 'IN_PROGRESS'] } } }),
       prisma.product.findMany({
         where: { isActive: true },

@@ -92,7 +92,8 @@ export const createSalesOrder = async (req: Request, res: Response) => {
           deliveryTerms: req.body.deliveryTerms,
           transporterInfo: req.body.transporterInfo,
           eWayBillNo: req.body.eWayBillNo,
-          items: { create: calculated.items.map((item: any, index: number) => ({ ...item, sourceWarehouseId, supplyMode: items[index]?.supplyMode || 'MAKE_TO_STOCK', backorderQty: 0 })) },
+          // normalizeSalesItems also returns the cost, margin and price source used by quotations; order lines have no such columns.
+          items: { create: calculated.items.map(({ costRate: _costRate, marginPercent: _marginPercent, priceSource: _priceSource, ...item }: any, index: number) => ({ ...item, sourceWarehouseId, supplyMode: items[index]?.supplyMode || 'MAKE_TO_STOCK', backorderQty: 0 })) },
         },
         include: { customer: true, items: { include: { product: true } } },
       });
