@@ -40,6 +40,11 @@ export const createEwayBill = handle(async (req, res) => {
   return success(res, { ...withValidation(result.bill), warnings: result.warnings }, 'E-way bill draft created', 201);
 });
 
+export const createSplitEwayBills = handle(async (req, res) => {
+  const result = await prisma.$transaction((tx) => eway.createSplitBills(tx, req, req.body));
+  return success(res, result, 'Split e-way bill drafts created', 201);
+});
+
 export const updateEwayBill = handle(async (req, res) => {
   const bill = await prisma.$transaction((tx) => eway.updateDraft(tx, req, req.params.id, req.body));
   return success(res, withValidation(bill), 'E-way bill updated');

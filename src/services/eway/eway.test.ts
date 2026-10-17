@@ -167,5 +167,102 @@ describe('e-way bill payload', () => {
     expect(entry.itemList[0]).toMatchObject({ hsnCode: '7214', qtyUnit: 'KGS', cgstRate: 9, sgstRate: 9, igstRate: 0 });
     expect(formatNicDate(new Date('2026-10-15T20:00:00Z'))).toBe('16/10/2026');
   });
+
+  it('validates multi-vehicle split shipment inputs', async () => {
+    const { createSplitBills, EwayError } = await import('./ewayBill.service');
+    const mockTx = {
+      $executeRawUnsafe: async () => {},
+    };
+
+    // Less than 2 vehicles
+    await expect(
+      createSplitBills(mockTx, { user: { id: 'u1' } }, {
+        sourceType: 'SALES_INVOICE',
+        sourceId: 'inv-1',
+        dispatchGstin: MH_GSTIN,
+        vehicles: [{ vehicleNo: 'MH12AB1234', quantity: 50 }],
+      })
+    ).rejects.toThrow('Provide at least 2 vehicles');
+
+    // Missing vehicle number
+    await expect(
+      createSplitBills(mockTx, { user: { id: 'u1' } }, {
+        sourceType: 'SALES_INVOICE',
+        sourceId: 'inv-1',
+        dispatchGstin: MH_GSTIN,
+        vehicles: [
+          { vehicleNo: '', quantity: 50 },
+          { vehicleNo: 'MH12CD5678', quantity: 50 },
+        ],
+      })
+    ).rejects.toThrow('Each vehicle must have a vehicle number');
+
+    // Zero or negative quantity
+    await expect(
+      createSplitBills(mockTx, { user: { id: 'u1' } }, {
+        sourceType: 'SALES_INVOICE',
+        sourceId: 'inv-1',
+        dispatchGstin: MH_GSTIN,
+        vehicles: [
+          { vehicleNo: 'MH12AB1234', quantity: 0 },
+          { vehicleNo: 'MH12CD5678', quantity: 50 },
+        ],
+      })
+    ).rejects.toThrow('quantity must be greater than zero');
+
+    // Mismatched total quantity vs invoice predefined quantity (100 in invoice, 110 assigned)
+    const mockInvoice = {
+      id: 'inv-1',
+      status: 'SUBMITTED',
+      invoiceNo: 'INV-2026-001',
+      date: new Date('2026-10-15'),
+      grandTotal: 118000,
+      customer: {
+        name: 'Acme Infra Ltd',
+        gstin: MH_GSTIN,
+        stateCode: 27,
+        address: 'Plot 4, MIDC, Pune',
+        city: 'Pune',
+        zip: '411018',
+        country: 'India',
+      },
+      items: [
+        {
+          productId: 'prod-1',
+          quantity: 100,
+          rate: 1000,
+          discount: 0,
+          netAmount: 100000,
+          taxRate: 18,
+          taxAmount: 18000,
+          total: 118000,
+          product: { type: 'PRODUCT', name: 'TMT Steel 12mm', hsnCode: '7214', unit: { symbol: 'KGS' } },
+          taxes: [{ label: 'GST', rate: 18 }],
+        },
+      ],
+    };
+
+    const mockTxWithDoc = {
+      $executeRawUnsafe: async () => {},
+      salesInvoice: {
+        findUnique: async () => mockInvoice,
+      },
+      ewayBill: {
+        findFirst: async () => null,
+      },
+    };
+
+    await expect(
+      createSplitBills(mockTxWithDoc, { user: { id: 'u1' } }, {
+        sourceType: 'SALES_INVOICE',
+        sourceId: 'inv-1',
+        dispatchGstin: MH_GSTIN,
+        vehicles: [
+          { vehicleNo: 'MH12AB1234', quantity: 60 },
+          { vehicleNo: 'MH12CD5678', quantity: 50 },
+        ],
+      })
+    ).rejects.toThrow('Total assigned quantity (110) does not match the invoice predefined goods quantity (100)');
+  });
 });
 

@@ -214,8 +214,8 @@ export function renderEwayBillPdf(bill: any) {
   top += 20;
   const items = bill.items || [];
   const totalDocQty = items.reduce((sum: number, it: any) => sum + Number(it.quantity || 0), 0);
-  const isSplit = false;
-  const ratio = 1;
+  const isSplit = bill.splitQuantity != null && Number(bill.splitQuantity) > 0 && totalDocQty > 0;
+  const ratio = isSplit ? Number(bill.splitQuantity) / totalDocQty : 1;
   const MAX_ITEMS = 9;
   items.slice(0, MAX_ITEMS).forEach((item: any, index: number) => {
     const taxRate = Number(item.cgstRate || 0) + Number(item.sgstRate || 0) + Number(item.igstRate || 0) + Number(item.cessRate || 0);
