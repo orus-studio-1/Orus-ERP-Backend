@@ -7,7 +7,7 @@ import { serializeInvoice, serializeMoney } from '../utils/invoice';
 import { pickDefined } from '../utils/payload';
 import { computeCustomerPriority, emptyPriority, tierRank } from '../services/crm/customerPriority.service';
 
-const customerFields = ['name', 'email', 'phone', 'contactId', 'address', 'city', 'state', 'country', 'zip', 'taxId', 'currency', 'creditLimit', 'paymentTerms', 'notes', 'isActive'] as const;
+const customerFields = ['name', 'email', 'phone', 'contactId', 'address', 'city', 'state', 'country', 'zip', 'taxId', 'gstin', 'stateCode', 'currency', 'creditLimit', 'paymentTerms', 'notes', 'isActive'] as const;
 
 export const getCustomers = async (req: Request, res: Response) => {
   try {
@@ -98,6 +98,43 @@ export const updateCustomer = async (req: Request, res: Response) => {
   try {
     const customer = await prisma.customer.update({ where: { id: req.params.id }, data: pickDefined(req.body, customerFields) as any });
     return success(res, customer, 'Customer updated');
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
+const addressFields = ['label', 'address', 'city', 'state', 'stateCode', 'country', 'zip'] as const;
+
+// The customer's own address is always the first choice; saved ones follow it.
+export const getCustomerAddresses = async (req: Request, res: Response) => {
+  try {
+    const customer = await prisma.customer.findUnique({ where: { id: req.params.id }, include: { addresses: { orderBy: { createdAt: 'asc' } } } });
+    if (!customer) return error(res, 'Customer not found', 404);
+    const primary = customer.address
+      ? [{ id: 'primary', label: 'Primary address', address: customer.address, city: customer.city, state: customer.state, stateCode: customer.stateCode, country: customer.country, zip: customer.zip }]
+      : [];
+    return success(res, [...primary, ...customer.addresses]);
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
+export const createCustomerAddress = async (req: Request, res: Response) => {
+  try {
+    const data = pickDefined(req.body, addressFields) as any;
+    if (!data.address || !String(data.address).trim()) return error(res, 'Address is required', 400);
+    const address = await prisma.customerAddress.create({ data: { ...data, label: data.label?.trim() || data.city || 'Address', customerId: req.params.id } });
+    return success(res, address, 'Address added', 201);
+  } catch (err: any) {
+    return handlePrismaError(res, err);
+  }
+};
+
+export const deleteCustomerAddress = async (req: Request, res: Response) => {
+  try {
+    const { count } = await prisma.customerAddress.deleteMany({ where: { id: req.params.addressId, customerId: req.params.id } });
+    if (!count) return error(res, 'Address not found', 404);
+    return success(res, null, 'Address removed');
   } catch (err: any) {
     return handlePrismaError(res, err);
   }

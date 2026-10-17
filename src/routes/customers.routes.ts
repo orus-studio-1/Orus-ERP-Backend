@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { getCustomers, getCustomer, createCustomer, updateCustomer, deleteCustomer, getCustomerInvoices, getCustomerOutstanding } from '../controllers/customers.controller';
+import { getCustomers, getCustomer, createCustomer, updateCustomer, deleteCustomer, getCustomerInvoices, getCustomerOutstanding, getCustomerAddresses, createCustomerAddress, deleteCustomerAddress } from '../controllers/customers.controller';
 import { authenticate, requireModuleAccess } from '../middleware/auth';
 
 const router = Router();
@@ -9,6 +9,8 @@ router.use(requireModuleAccess('customers', () => 'customers'));
 router.route('/').get(getCustomers).post(createCustomer);
 router.get('/:id/invoices', getCustomerInvoices);
 router.get('/:id/outstanding', getCustomerOutstanding);
+router.route('/:id/addresses').get(getCustomerAddresses).post(createCustomerAddress);
+router.delete('/:id/addresses/:addressId', deleteCustomerAddress);
 router.route('/:id').get(getCustomer).put(updateCustomer).delete(deleteCustomer);
 
 export default router;

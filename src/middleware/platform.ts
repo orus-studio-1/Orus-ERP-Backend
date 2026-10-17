@@ -28,7 +28,7 @@ const auditDelegates: Record<string, string> = {
   'procurement:material-requests': 'materialRequest', 'procurement:rfqs': 'requestForQuotation', 'procurement:purchase-orders': 'purchaseOrder', 'procurement:purchase-receipts': 'purchaseReceipt', 'procurement:purchase-invoices': 'purchaseInvoice',
   // Resources whose Prisma model name does not follow from the route name.
   'access:roles': 'accessRole', 'accounting:recurring-journals': 'recurringJournalEntry',
-  'crm:assignment-rules': 'crmAssignmentRule', 'crm:saved-views': 'crmSavedView', 'crm:scope-rules': 'crmScopeRule', 'crm:lost-reasons': 'crmLostReason', 'crm:email-templates': 'crmEmailTemplate', 'crm:communications': 'crmCommunication', 'crm:integrations': 'crmIntegrationAccount', 'crm:capture-tokens': 'crmCaptureToken',
+  'crm:assignment-rules': 'crmAssignmentRule', 'crm:territories': 'crmTerritory', 'crm:saved-views': 'crmSavedView', 'crm:scope-rules': 'crmScopeRule', 'crm:lost-reasons': 'crmLostReason', 'crm:email-templates': 'crmEmailTemplate', 'crm:communications': 'crmCommunication', 'crm:integrations': 'crmIntegrationAccount', 'crm:capture-tokens': 'crmCaptureToken',
   'hr:lifecycle-events': 'employeeLifecycleEvent',
   'inventory:reconciliations': 'stockReconciliation', 'inventory:attributes': 'productAttribute', 'inventory:uom-conversions': 'productUomConversion', 'inventory:transfer-orders': 'stockTransferOrder',
   'invoicing:invoices': 'salesInvoice', 'invoicing:subscriptions': 'subscriptionTemplate', 'payments:entries': 'paymentEntry',
@@ -37,7 +37,7 @@ const auditDelegates: Record<string, string> = {
 };
 
 // POST /module/resource/:id/<operation> acts on an existing record, so it also gets a "before" snapshot.
-export const documentOperations = new Set(['submit', 'cancel', 'amend', 'approve', 'reject', 'convert', 'complete', 'dispatch', 'receive', 'post', 'close', 'reopen', 'revise', 'status', 'win', 'lose', 'qualify', 'assign', 'merge', 'stage', 'mark-lost', 'send', 'confirm', 'accept', 'release', 'start', 'pause', 'resume', 'finish', 'issue', 'reverse', 'return']);
+export const documentOperations = new Set(['submit', 'cancel', 'amend', 'approve', 'reject', 'convert', 'complete', 'dispatch', 'receive', 'post', 'close', 'reopen', 'revise', 'status', 'win', 'lose', 'qualify', 'assign', 'merge', 'stage', 'mark-lost', 'send', 'confirm', 'accept', 'release', 'start', 'pause', 'resume', 'finish', 'issue', 'reverse', 'return', 'export', 'record-number', 'vehicle', 'extend']);
 
 // "journal-entries" -> "journalEntry", "leave-requests" -> "leaveRequest"
 function singularCamel(resource: string) {
