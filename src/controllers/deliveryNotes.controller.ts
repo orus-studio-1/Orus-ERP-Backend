@@ -7,6 +7,8 @@ import { audit, postStockOut } from '../utils/erp';
 import { serializeMoney } from '../utils/invoice';
 import { fulfillSalesOrderReservation } from '../services/inventory/reservation.service';
 import { refreshSalesOrderProgress } from '../services/sales/salesOrder.service';
+import { assertNoLiveEwayBill } from '../services/eway/ewayBill.service';
+import { resolveShippingSnapshot } from '../utils/shippingAddress';
 
 async function nextDeliveryNo(tx: any) {
   let series = await tx.numberingSeries.findFirst({ where: { documentType: 'DELIVERY_NOTE', isActive: true, isDefault: true } });
@@ -95,17 +97,19 @@ export const getDeliveryNote = async (req: Request, res: Response) => {
 
 export const createDeliveryNote = async (req: Request, res: Response) => {
   try {
-    const { customerId, salesOrderId, warehouseId, date, postingDate, notes, items = [] } = req.body;
+    const { customerId, salesOrderId, warehouseId, date, postingDate, notes, items = [], shippingAddressId } = req.body;
     if (!customerId) return error(res, 'customerId is required', 400);
     const itemError = validateDeliveryItems(items);
     if (itemError) return error(res, itemError, 400);
     const note = await prisma.$transaction(async (tx) => {
       const deliveryNo = await nextDeliveryNo(tx);
+      const shippingAddressSnapshot = await resolveShippingSnapshot(tx, customerId, shippingAddressId);
       const created = await tx.deliveryNote.create({
         data: {
           deliveryNo,
           customerId,
           salesOrderId,
+          shippingAddressSnapshot,
           warehouseId,
           date: date ? new Date(date) : new Date(),
           postingDate: postingDate ? new Date(postingDate) : undefined,
@@ -126,13 +130,14 @@ export const createDeliveryNote = async (req: Request, res: Response) => {
 
 export const updateDeliveryNote = async (req: Request, res: Response) => {
   try {
-    const { customerId, salesOrderId, warehouseId, date, postingDate, notes, items } = req.body;
+    const { customerId, salesOrderId, warehouseId, date, postingDate, notes, items, shippingAddressId } = req.body;
     const note = await prisma.$transaction(async (tx) => {
       const existing = await tx.deliveryNote.findUnique({ where: { id: req.params.id } });
       if (!existing) throw new Error('Delivery note not found');
       if (existing.status !== 'DRAFT') throw new Error('Only draft delivery notes can be edited');
       if (items) { const itemError = validateDeliveryItems(items); if (itemError) throw new Error(itemError); await tx.deliveryNoteItem.deleteMany({ where: { deliveryNoteId: existing.id } }); }
-      const updated = await tx.deliveryNote.update({ where: { id: existing.id }, data: { customerId, salesOrderId: salesOrderId || null, warehouseId: warehouseId || null, date: date ? new Date(date) : undefined, postingDate: postingDate ? new Date(postingDate) : null, notes, items: items ? { create: normalizeItems(items) } : undefined }, include: deliveryInclude });
+      const snapshot = shippingAddressId === undefined ? undefined : ((await resolveShippingSnapshot(tx, customerId || existing.customerId, shippingAddressId)) ?? Prisma.DbNull);
+      const updated = await tx.deliveryNote.update({ where: { id: existing.id }, data: { shippingAddressSnapshot: snapshot, customerId, salesOrderId: salesOrderId || null, warehouseId: warehouseId || null, date: date ? new Date(date) : undefined, postingDate: postingDate ? new Date(postingDate) : null, notes, items: items ? { create: normalizeItems(items) } : undefined }, include: deliveryInclude });
       await audit(tx, req, { entityType: 'DELIVERY_NOTE', entityId: updated.id, deliveryNoteId: updated.id, action: 'UPDATE', statusBefore: 'DRAFT', statusAfter: 'DRAFT', message: `Updated ${updated.deliveryNo}` });
       return updated;
     });
@@ -162,6 +167,7 @@ export const createDeliveryNoteFromSalesOrder = async (req: Request, res: Respon
           salesOrderId: order.id,
           date: new Date(),
           notes: order.notes,
+          shippingAddressSnapshot: req.body.shippingAddressId ? await resolveShippingSnapshot(tx, order.customerId, req.body.shippingAddressId) : ((order.shippingAddressSnapshot as any) ?? undefined),
           warehouseId: req.body.warehouseId || order.sourceWarehouseId,
           items: { create: normalizeItems(sourceItems) },
         },
@@ -203,6 +209,7 @@ export const updateDeliveryNoteStatus = async (req: Request, res: Response) => {
       }
       if (status === 'CANCELLED') {
         if (existing.status !== 'SUBMITTED') throw new Error('Only submitted delivery notes can be cancelled');
+        await assertNoLiveEwayBill(tx, { deliveryNoteId: existing.id });
         await postStockOut(tx, existing.items, existing.deliveryNo, 'Stock returned from cancelled delivery note', existing.warehouseId || undefined, true);
         if (existing.salesOrderId) {
           for (const item of existing.items) {
