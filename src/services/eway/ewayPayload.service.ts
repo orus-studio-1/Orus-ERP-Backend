@@ -235,8 +235,9 @@ const num = (value: any) => round2(Number(value) || 0);
 // TotNonAdvolVal, and hsnCode as text.
 export function toNicBill(bill: Record<string, any>, items: Array<Record<string, any>>) {
   const modeNumber = TRANSPORT_MODES[String(bill.transportMode)] || 1;
-  const isSplit = false;
-  const ratio = 1;
+  const totalDocQty = items.reduce((sum: number, it: any) => sum + Number(it.quantity || 0), 0);
+  const isSplit = bill.splitQuantity != null && Number(bill.splitQuantity) > 0 && totalDocQty > 0;
+  const ratio = isSplit ? Number(bill.splitQuantity) / totalDocQty : 1;
   const entry: Record<string, any> = {
     userGstin: bill.dispatchGstin,
     supplyType: bill.supplyType,

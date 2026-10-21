@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "EwayBill" ADD COLUMN IF NOT EXISTS "splitGroupId" TEXT,
+ADD COLUMN IF NOT EXISTS "splitQuantity" DECIMAL(18,6);

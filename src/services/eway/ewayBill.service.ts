@@ -216,7 +216,7 @@ export async function checkRequirement(tx: any, sourceType: SourceType, sourceId
       status: { in: LIVE_STATUSES },
       ...(sourceType === 'SALES_INVOICE' ? { salesInvoiceId: source.id } : { deliveryNoteId: source.id }),
     },
-    select: { id: true, billNo: true, status: true, ewbNo: true, vehicleNo: true },
+    select: { id: true, billNo: true, status: true, ewbNo: true, vehicleNo: true, splitQuantity: true, splitGroupId: true },
     orderBy: { createdAt: 'asc' },
   });
 
@@ -232,8 +232,11 @@ export async function createBill(tx: any, req: any, input: { sourceType: SourceT
   if (!['SALES_INVOICE', 'DELIVERY_NOTE'].includes(input.sourceType)) throw new EwayError('sourceType must be SALES_INVOICE or DELIVERY_NOTE');
   await tx.$executeRawUnsafe('SELECT pg_advisory_xact_lock(hashtext($1))', `eway-create:${input.sourceType}:${input.sourceId}`);
   const source = await loadSource(tx, input.sourceType, input.sourceId);
-  const existing = await siblingLiveBill(tx, input.sourceType, source);
-  if (existing) throw new EwayError(`${existing.billNo} already covers this consignment (${existing.status}). Cancel it before making another`, 409);
+  // When this is a split bill (skipDuplicateCheck), siblings already exist — don't block.
+  if (!input._skipDuplicateCheck) {
+    const existing = await siblingLiveBill(tx, input.sourceType, source);
+    if (existing) throw new EwayError(`${existing.billNo} already covers this consignment (${existing.status}). Cancel it before making another`, 409);
+  }
 
   const options = await dispatchGstinOptions(tx);
   const gstin = normalizeGstin(input.dispatchGstin);
@@ -258,6 +261,7 @@ export async function createBill(tx: any, req: any, input: { sourceType: SourceT
     doc: {
       docNo: input.sourceType === 'SALES_INVOICE' ? source.invoiceNo : source.deliveryNo,
       docDate: input.sourceType === 'SALES_INVOICE' ? source.date : (source.postingDate || source.date),
+      // Without service lines the invoice total is the goods total, so rounding and invoice-level discounts carry over.
       grandTotal: input.sourceType === 'SALES_INVOICE' && !hasServices ? num(source.grandTotal) : null,
     },
     dispatch: { gstin, legalName: option.legalName },
@@ -272,6 +276,7 @@ export async function createBill(tx: any, req: any, input: { sourceType: SourceT
   if (input.toPlace !== undefined) draftInput.shipTo.place = input.toPlace;
   if (input.toPincode !== undefined) draftInput.shipTo.pincode = input.toPincode;
   const draft = buildEwayDraft(draftInput);
+  // Preview: what the bill would hold, so the create form can show and adjust it. Nothing is saved.
   if (input.dryRun) return { preview: true, bill: draft.bill, items: draft.items, errors: draft.errors, warnings: [...fromWarnings, ...lineWarnings, ...draft.warnings], goodsTotal, totalQuantity };
 
   const billNo = await newBillNo(tx);
@@ -281,13 +286,67 @@ export async function createBill(tx: any, req: any, input: { sourceType: SourceT
       billNo, status: 'DRAFT', source: 'MANUAL', createdById: req.user?.id,
       salesInvoiceId: input.sourceType === 'SALES_INVOICE' ? source.id : undefined,
       deliveryNoteId: input.sourceType === 'DELIVERY_NOTE' ? source.id : undefined,
+      splitGroupId: input._splitGroupId || null,
+      splitQuantity: input._splitQuantity != null ? input._splitQuantity : null,
       items: { create: draft.items },
       events: { create: { type: 'CREATED', userId: req.user?.id, data: { sourceType: input.sourceType, sourceId: input.sourceId } } },
     },
     include: { items: true },
   });
-  await audit(tx, req, { entityType: 'EWAY_BILL', entityId: bill.id, action: 'CREATE', statusAfter: 'DRAFT', message: `Created ${billNo} for ${draft.bill.docNo}` });
+  await audit(tx, req, { entityType: 'EWAY_BILL', entityId: bill.id, action: 'CREATE', statusAfter: 'DRAFT', message: `Created ${billNo} for ${draft.bill.docNo}${input._splitGroupId ? ' (split shipment)' : ''}` });
   return { bill, errors: draft.errors, warnings: [...fromWarnings, ...lineWarnings, ...draft.warnings], goodsTotal, totalQuantity };
+}
+
+// Creates multiple e-way bill drafts in one transaction — one per vehicle.
+// All bills share a splitGroupId and each carries a portion of the total quantity.
+export async function createSplitBills(
+  tx: any,
+  req: any,
+  input: { sourceType: SourceType; sourceId: string; dispatchGstin: string; vehicles: Array<{ vehicleNo: string; vehicleType?: string; quantity: number }> } & Record<string, any>
+) {
+  if (!Array.isArray(input.vehicles) || input.vehicles.length < 2) throw new EwayError('Provide at least 2 vehicles for a split shipment');
+  for (const vehicle of input.vehicles) {
+    if (!vehicle.vehicleNo) throw new EwayError('Each vehicle must have a vehicle number');
+    if (!(Number(vehicle.quantity) > 0)) throw new EwayError(`Vehicle ${vehicle.vehicleNo}: quantity must be greater than zero`);
+  }
+
+  // Block if a live non-split bill already exists.
+  await tx.$executeRawUnsafe('SELECT pg_advisory_xact_lock(hashtext($1))', `eway-create:${input.sourceType}:${input.sourceId}`);
+  const source = await loadSource(tx, input.sourceType, input.sourceId);
+  const existing = await siblingLiveBill(tx, input.sourceType, source);
+  if (existing) throw new EwayError(`${existing.billNo} already covers this consignment (${existing.status}). Cancel it before splitting`, 409);
+
+  const { totalQuantity, lines } = sourceLines(input.sourceType, source);
+  if (!lines.length || totalQuantity <= 0) {
+    throw new EwayError('This document has no goods lines to split across vehicles', 400);
+  }
+
+  const totalAssignedQty = round2(input.vehicles.reduce((sum, v) => sum + num(v.quantity), 0));
+  if (Math.abs(totalAssignedQty - totalQuantity) > 0.001) {
+    throw new EwayError(
+      `Total assigned quantity (${totalAssignedQty}) does not match the invoice predefined goods quantity (${totalQuantity}). All ${totalQuantity} units must be strictly accounted for across vehicles.`,
+      400
+    );
+  }
+
+  const splitGroupId = `SPLIT-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const bills: any[] = [];
+  const allWarnings: string[] = [];
+
+  for (const vehicle of input.vehicles) {
+    const result = await createBill(tx, req, {
+      ...input,
+      vehicleNo: vehicle.vehicleNo,
+      vehicleType: vehicle.vehicleType || 'R',
+      _skipDuplicateCheck: true,
+      _splitGroupId: splitGroupId,
+      _splitQuantity: Number(vehicle.quantity),
+    });
+    bills.push(result.bill);
+    allWarnings.push(...result.warnings);
+  }
+
+  return { bills, splitGroupId, warnings: [...new Set(allWarnings)] };
 }
 
 const EDITABLE = ['fromAddr1', 'fromAddr2', 'fromPlace', 'fromPincode', 'fromStateCode', 'actualFromStateCode', 'toName', 'toAddr1', 'toAddr2', 'toPlace', 'toPincode', 'toStateCode', 'actualToStateCode', 'transactionType', 'subSupplyType', 'transportMode', 'distanceKm', 'transporterId', 'transporterName', 'transportDocNo', 'vehicleNo', 'vehicleType'];
@@ -298,7 +357,15 @@ export async function getBill(tx: any, id: string) {
     include: { items: true, events: { orderBy: { createdAt: 'desc' } }, salesInvoice: { select: { id: true, invoiceNo: true, status: true } }, deliveryNote: { select: { id: true, deliveryNo: true, status: true } } },
   });
   if (!bill) throw new EwayError('E-way bill not found', 404);
-  return { ...bill, splitSiblings: [] };
+  let splitSiblings: any[] = [];
+  if (bill.splitGroupId) {
+    splitSiblings = await tx.ewayBill.findMany({
+      where: { splitGroupId: bill.splitGroupId, id: { not: id } },
+      select: { id: true, billNo: true, ewbNo: true, vehicleNo: true, vehicleType: true, splitQuantity: true, status: true },
+      orderBy: { createdAt: 'asc' },
+    });
+  }
+  return { ...bill, splitSiblings };
 }
 
 export function validationFor(bill: any) {
@@ -443,9 +510,180 @@ export async function recordCancel(tx: any, req: any, id: string, input: { reaso
   return { bill: await getBill(tx, id), warnings: withinWindow ? [] : ['The 24 hour cancellation window had passed; confirm the cancellation was accepted on the portal'] };
 }
 
+async function recordMultiVehicle(tx: any, req: any, bill: any, input: any) {
+  const targetQty = bill.splitQuantity != null && Number(bill.splitQuantity) > 0
+    ? Number(bill.splitQuantity)
+    : round2((bill.items || []).reduce((sum: number, it: any) => sum + num(it.quantity), 0));
+
+  if (!String(input.fromPlace || '').trim()) throw new EwayError('The transshipment place is required');
+  if (!Array.isArray(input.vehicles) || input.vehicles.length < 2) throw new EwayError('Provide at least 2 vehicles for transshipment split');
+
+  for (const v of input.vehicles) {
+    const vno = normalizeVehicleNo(v.vehicleNo);
+    if (!VEHICLE_PATTERN.test(vno)) throw new EwayError(`Vehicle number ${v.vehicleNo || ''} is not valid (example MH12AB1234)`);
+    if (!(Number(v.quantity) > 0)) throw new EwayError(`Vehicle ${vno}: quantity must be greater than zero`);
+  }
+
+  const totalAssigned = round2(input.vehicles.reduce((s: number, v: any) => s + num(v.quantity), 0));
+  if (targetQty > 0 && Math.abs(totalAssigned - targetQty) > 0.001) {
+    throw new EwayError(
+      `Total assigned quantity (${totalAssigned}) does not match the consignment quantity (${targetQty}). All ${targetQty} units must be strictly accounted for across vehicles.`,
+      400
+    );
+  }
+
+  const splitGroupId = bill.splitGroupId || `SPLIT-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const firstVehicle = input.vehicles[0];
+  const firstVehicleNo = normalizeVehicleNo(firstVehicle.vehicleNo);
+
+  // Update original bill with vehicle 0 and its portion of split quantity
+  await tx.ewayBill.update({
+    where: { id: bill.id },
+    data: {
+      vehicleNo: firstVehicleNo,
+      vehicleType: firstVehicle.vehicleType === 'O' ? 'O' : bill.vehicleType,
+      splitGroupId,
+      splitQuantity: Number(firstVehicle.quantity),
+      ...(input.transportDocNo !== undefined ? { transportDocNo: input.transportDocNo || null } : {}),
+      ...(input.transportDocDate ? { transportDocDate: new Date(input.transportDocDate) } : {}),
+    },
+  });
+
+  await tx.ewayBillEvent.create({
+    data: {
+      ewayBillId: bill.id,
+      type: 'VEHICLE_UPDATED',
+      userId: req.user?.id,
+      data: {
+        previousVehicleNo: bill.vehicleNo,
+        vehicleNo: firstVehicleNo,
+        fromPlace: input.fromPlace,
+        fromState: input.fromState,
+        reason: input.reason || 'Transshipment split into multiple vehicles',
+        remarks: input.remarks,
+        splitGroupId,
+        splitQuantity: Number(firstVehicle.quantity),
+        multiVehicle: true,
+      },
+    },
+  });
+
+  // Create sibling bills for vehicles 1..n sharing the parent ewbNo and group
+  for (let i = 1; i < input.vehicles.length; i++) {
+    const v = input.vehicles[i];
+    const vNo = normalizeVehicleNo(v.vehicleNo);
+    const newNo = await newBillNo(tx);
+    await tx.ewayBill.create({
+      data: {
+        companyId: bill.companyId || undefined,
+        billNo: newNo,
+        status: bill.status,
+        source: bill.source || 'MANUAL',
+        ewbNo: bill.ewbNo,
+        ewbDate: bill.ewbDate,
+        validUntil: bill.validUntil,
+        irn: bill.irn,
+        sourceType: bill.sourceType,
+        salesInvoiceId: bill.salesInvoiceId || undefined,
+        deliveryNoteId: bill.deliveryNoteId || undefined,
+        stockTransferOrderId: bill.stockTransferOrderId || undefined,
+        purchaseReturnId: bill.purchaseReturnId || undefined,
+        supplyType: bill.supplyType,
+        subSupplyType: bill.subSupplyType,
+        docType: bill.docType,
+        docNo: bill.docNo,
+        docDate: bill.docDate,
+        transactionType: bill.transactionType,
+        dispatchGstin: bill.dispatchGstin,
+        fromGstin: bill.fromGstin,
+        fromName: bill.fromName,
+        fromAddr1: bill.fromAddr1,
+        fromAddr2: bill.fromAddr2,
+        fromPlace: bill.fromPlace,
+        fromPincode: bill.fromPincode,
+        fromStateCode: bill.fromStateCode,
+        actualFromStateCode: bill.actualFromStateCode,
+        toGstin: bill.toGstin,
+        toName: bill.toName,
+        toAddr1: bill.toAddr1,
+        toAddr2: bill.toAddr2,
+        toPlace: bill.toPlace,
+        toPincode: bill.toPincode,
+        toStateCode: bill.toStateCode,
+        actualToStateCode: bill.actualToStateCode,
+        taxableValue: bill.taxableValue,
+        cgstValue: bill.cgstValue,
+        sgstValue: bill.sgstValue,
+        igstValue: bill.igstValue,
+        cessValue: bill.cessValue,
+        otherValue: bill.otherValue,
+        totalValue: bill.totalValue,
+        transportMode: bill.transportMode,
+        distanceKm: bill.distanceKm,
+        transporterId: bill.transporterId,
+        transporterName: bill.transporterName,
+        transportDocNo: input.transportDocNo ?? bill.transportDocNo,
+        transportDocDate: input.transportDocDate ? new Date(input.transportDocDate) : bill.transportDocDate,
+        vehicleNo: vNo,
+        vehicleType: v.vehicleType === 'O' ? 'O' : bill.vehicleType,
+        createdById: req.user?.id,
+        splitGroupId,
+        splitQuantity: Number(v.quantity),
+        items: {
+          create: (bill.items || []).map((it: any) => ({
+            productId: it.productId,
+            productName: it.productName,
+            description: it.description,
+            hsnCode: it.hsnCode,
+            quantity: it.quantity,
+            qtyUnit: it.qtyUnit,
+            taxableAmount: it.taxableAmount,
+            cgstRate: it.cgstRate,
+            sgstRate: it.sgstRate,
+            igstRate: it.igstRate,
+            cessRate: it.cessRate,
+          })),
+        },
+        events: {
+          create: {
+            type: 'VEHICLE_UPDATED',
+            userId: req.user?.id,
+            data: {
+              previousVehicleNo: bill.vehicleNo,
+              vehicleNo: vNo,
+              fromPlace: input.fromPlace,
+              fromState: input.fromState,
+              reason: input.reason || 'Transshipment split into multiple vehicles',
+              remarks: input.remarks,
+              splitGroupId,
+              splitQuantity: Number(v.quantity),
+              multiVehicle: true,
+            },
+          },
+        },
+      },
+    });
+  }
+
+  await audit(tx, req, {
+    entityType: 'EWAY_BILL',
+    entityId: bill.id,
+    action: 'UPDATE_VEHICLE',
+    statusBefore: bill.status,
+    statusAfter: bill.status,
+    message: `Split into ${input.vehicles.length} vehicles at ${[input.fromPlace, input.fromState].filter(Boolean).join(', ')} for ${bill.billNo} (Group: ${splitGroupId})`,
+  });
+
+  return getBill(tx, bill.id);
+}
+
 export async function recordVehicle(tx: any, req: any, id: string, input: any) {
   const bill = await getBill(tx, id);
   if (bill.status !== 'GENERATED') throw new EwayError('Vehicle can only be changed on a generated e-way bill');
+
+  if (Array.isArray(input.vehicles) && input.vehicles.length >= 2) {
+    return recordMultiVehicle(tx, req, bill, input);
+  }
 
   const vehicleNo = normalizeVehicleNo(input.vehicleNo);
   if (!VEHICLE_PATTERN.test(vehicleNo)) throw new EwayError('Vehicle number format is not valid (example MH12AB1234)');

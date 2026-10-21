@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import {
-  cancelEwayBill, checkEwayRequirement, createEwayBill, deleteEwayBill, ewayBillPdf, ewayDispatchGstins, expiringEwayBills, exportEwayBills, extendEwayBill,
+  cancelEwayBill, checkEwayRequirement, createEwayBill, createSplitEwayBills, deleteEwayBill, ewayBillPdf, ewayDispatchGstins, expiringEwayBills, exportEwayBills, extendEwayBill,
   getEwayBill, getEwayConfig, listEwayBills, pendingEwayBills, recordEwayNumber, updateEwayBill, updateEwayConfig, updateEwayVehicle,
 } from '../controllers/invoicingExtras/eway.controller';
 
@@ -17,6 +17,8 @@ router.get('/expiring', expiringEwayBills);
 router.post('/export', exportEwayBills);
 
 router.route('/').get(listEwayBills).post(createEwayBill);
+// Split shipment: one invoice shipped in multiple vehicles — creates one draft per vehicle.
+router.post('/split', createSplitEwayBills);
 router.route('/:id').get(getEwayBill).patch(updateEwayBill).delete(deleteEwayBill);
 router.post('/:id/export', exportEwayBills);
 router.post('/:id/record-number', recordEwayNumber);
