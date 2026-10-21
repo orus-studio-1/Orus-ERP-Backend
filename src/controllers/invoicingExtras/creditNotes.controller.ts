@@ -6,6 +6,7 @@ import { handlePrismaError } from '../../utils/prismaError';
 import { calculateInvoiceTotals } from '../../utils/invoice';
 import { audit, recalculateInvoiceAllocations } from '../../utils/erp';
 import { nextNo, postCreditNoteLedger, serializeCreditNote } from './shared';
+import { assertNoLiveEInvoice } from '../../services/einvoice/einvoice.service';
 
 const D = Prisma.Decimal;
 
@@ -174,6 +175,7 @@ export const updateCreditNoteStatus = async (req: Request, res: Response) => {
       }
       if (status === 'CANCELLED') {
         if (existing.status !== 'SUBMITTED') throw new Error('Only submitted credit notes can be cancelled');
+        await assertNoLiveEInvoice(tx, { creditNoteId: existing.id });
         await postCreditNoteLedger(tx, existing, true);
         await tx.paymentEntryAllocation.deleteMany({ where: { creditNoteId: existing.id } });
         await recalculateInvoiceAllocations(tx, existing.originalInvoiceId);

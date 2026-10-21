@@ -1,3 +1,5 @@
+import QRCode from 'qrcode';
+
 function esc(value: any) {
   return String(value ?? '').replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
 }
@@ -11,58 +13,314 @@ function textLine(x: number, y: number, size: number, text: string) {
   return `BT /F1 ${size} Tf ${x} ${y} Td (${esc(text)}) Tj ET`;
 }
 
-export function renderInvoicePdf(invoice: any, printFormat?: any) {
+// Draws a QR code as vector squares (the PDF is written by hand, so no image is embedded). (x, y) is the bottom-left corner.
+function qrOps(value: string, x: number, y: number, size: number) {
+  const qr = QRCode.create(value, { errorCorrectionLevel: 'L' });
+  const count = qr.modules.size;
+  const cell = size / count;
+  const data = qr.modules.data as unknown as ArrayLike<number>;
+  const rects: string[] = [];
+  for (let row = 0; row < count; row += 1) {
+    for (let col = 0; col < count; col += 1) {
+      if (data[row * count + col]) rects.push(`${(x + col * cell).toFixed(2)} ${(y + (count - 1 - row) * cell).toFixed(2)} ${cell.toFixed(2)} ${cell.toFixed(2)} re`);
+    }
+  }
+  return `0 0 0 rg ${rects.join(' ')} f 0 0 0 rg`;
+}
+
+const istStamp = (value: any) => {
+  const date = new Date(new Date(value).getTime() + 5.5 * 3600 * 1000);
+  return `${date.toISOString().slice(0, 10)} ${date.toISOString().slice(11, 19)} IST`;
+};
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Tax invoice. Same look as the e-way bill print: a coloured title band, boxed sections, tax breakup, and, when the
+// invoice has a generated e-invoice, the IRN, acknowledgement and the signed QR.
+// ---------------------------------------------------------------------------------------------------------------------
+
+const ONES = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+const TENS = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+
+// Indian grouping: crore, lakh, thousand.
+function numberWords(value: number): string {
+  let n = Math.floor(value);
+  if (n === 0) return 'Zero';
+  const two = (x: number) => (x < 20 ? ONES[x] : `${TENS[Math.floor(x / 10)]}${x % 10 ? ` ${ONES[x % 10]}` : ''}`);
+  const three = (x: number) => `${x >= 100 ? `${ONES[Math.floor(x / 100)]} Hundred${x % 100 ? ' ' : ''}` : ''}${x % 100 ? two(x % 100) : ''}`;
+  const parts: string[] = [];
+  const crore = Math.floor(n / 10000000); n %= 10000000;
+  const lakh = Math.floor(n / 100000); n %= 100000;
+  const thousand = Math.floor(n / 1000); n %= 1000;
+  if (crore) parts.push(`${numberWords(crore)} Crore`);
+  if (lakh) parts.push(`${two(lakh)} Lakh`);
+  if (thousand) parts.push(`${two(thousand)} Thousand`);
+  if (n) parts.push(three(n));
+  return parts.join(' ');
+}
+
+export function amountInWords(value: number): string {
+  const total = Math.round(Math.abs(value) * 100);
+  const rupees = Math.floor(total / 100);
+  const paise = total % 100;
+  return `Rupees ${numberWords(rupees)}${paise ? ` and ${numberWords(paise)} Paise` : ''} Only`;
+}
+
+// Everything printed besides the invoice itself: the company, the buyer, the ship-to address and the place of supply.
+export type InvoicePdfParties = {
+  seller?: { name?: string | null; gstin?: string | null; address?: string | null; city?: string | null; state?: string | null; zip?: string | null; phone?: string | null; email?: string | null } | null;
+  buyer?: { name?: string | null; gstin?: string | null; address?: string | null; city?: string | null; state?: string | null; stateCode?: string | null; zip?: string | null; phone?: string | null } | null;
+  shipTo?: { name?: string | null; gstin?: string | null; address?: string | null; city?: string | null; state?: string | null; stateCode?: string | null; zip?: string | null } | null;
+  placeOfSupply?: string | null;
+  hsnByProduct?: Record<string, string | null | undefined>;
+};
+
+type EInvoiceForPdf = { irn?: string | null; ackNo?: string | null; ackDate?: any; signedQr?: string | null; sellerGstin?: string | null; placeOfSupply?: string | null } | null | undefined;
+
+export function renderInvoicePdf(invoice: any, printFormat?: any, einvoice?: EInvoiceForPdf, parties: InvoicePdfParties = {}) {
   const template = printFormat?.template || {};
-  const title = template.title || 'Tax Invoice';
-  const lines: string[] = [];
-  let y = 790;
+  const title = String(template.title || 'Tax Invoice');
+  const currency = String(invoice.currency || 'INR');
+  const isInr = currency.toUpperCase() === 'INR';
+  const pages: string[][] = [[]];
+  let ops = pages[0];
+  const PAGE_H = 842;
+  const L = 36; const R = 559; const W = R - L;
+  const BOTTOM = 780;
+  const clean = (value: any) => String(value ?? '').replace(/[^\x20-\x7E]/g, '?');
+  const color = (c: number[]) => `${c[0]} ${c[1]} ${c[2]}`;
+  const BLACK = [0.1, 0.1, 0.1]; const GREY = [0.42, 0.45, 0.5]; const GREEN = [0.06, 0.46, 0.43]; const RED = [0.7, 0.15, 0.15];
 
-  lines.push(textLine(48, y, 18, title));
-  y -= 26;
-  lines.push(textLine(48, y, 11, `Invoice: ${invoice.invoiceNo}`));
-  lines.push(textLine(360, y, 11, `Date: ${new Date(invoice.date).toISOString().slice(0, 10)}`));
-  y -= 18;
-  lines.push(textLine(48, y, 11, `Customer: ${invoice.customer?.name || invoice.customerId}`));
-  lines.push(textLine(360, y, 11, `Status: ${invoice.status}`));
-  y -= 24;
-  lines.push(textLine(48, y, 12, 'Items'));
-  y -= 16;
-  lines.push(textLine(48, y, 9, 'Code'));
-  lines.push(textLine(125, y, 9, 'Description'));
-  lines.push(textLine(330, y, 9, 'Qty'));
-  lines.push(textLine(385, y, 9, 'Rate'));
-  lines.push(textLine(455, y, 9, 'Amount'));
-  y -= 12;
+  const text = (x: number, top: number, size: number, value: any, opts: { bold?: boolean; align?: 'left' | 'right'; color?: number[] } = {}) => {
+    const str = clean(value);
+    const left = opts.align === 'right' ? x - textWidth(str, size, opts.bold) : x;
+    ops.push(`BT /${opts.bold ? 'F2' : 'F1'} ${size} Tf ${color(opts.color || BLACK)} rg ${left.toFixed(1)} ${(PAGE_H - top).toFixed(1)} Td (${esc(str)}) Tj ET`);
+  };
+  const box = (x: number, top: number, w: number, h: number) => ops.push(`0.78 0.8 0.83 RG 0.6 w ${x} ${PAGE_H - top - h} ${w} ${h} re S`);
+  const band = (x: number, top: number, w: number, h: number, fill: number[]) => ops.push(`${color(fill)} rg ${x} ${PAGE_H - top - h} ${w} ${h} re f`);
+  const rule = (x1: number, x2: number, top: number) => ops.push(`0.86 0.88 0.9 RG 0.5 w ${x1} ${PAGE_H - top} m ${x2} ${PAGE_H - top} l S`);
+  const vrule = (x: number, top: number, h: number) => ops.push(`0.86 0.88 0.9 RG 0.5 w ${x} ${PAGE_H - top} m ${x} ${PAGE_H - top - h} l S`);
+  const money = (value: any) => `${isInr ? 'INR' : currency} ${amount(value)}`;
+  const num = (value: any) => Number(value && typeof value.toNumber === 'function' ? value.toNumber() : value || 0);
+  const stateLine = (code?: string | null, name?: string | null) => {
+    const label = name || (code && STATE_CODES[code]) || '';
+    return code ? `State ${code}${label ? ` (${label})` : ''}` : label;
+  };
 
-  for (const item of invoice.items || []) {
-    if (y < 120) break;
-    lines.push(textLine(48, y, 9, item.itemCode || item.product?.sku || ''));
-    lines.push(textLine(125, y, 9, String(item.description || item.product?.name || '').slice(0, 34)));
-    lines.push(textLine(330, y, 9, Number(item.quantity || 0).toString()));
-    lines.push(textLine(385, y, 9, money(item.rate || item.unitPrice, invoice.currency)));
-    lines.push(textLine(455, y, 9, money(item.total, invoice.currency)));
-    y -= 14;
+  let top = 36;
+  const newPage = () => {
+    ops = [];
+    pages.push(ops);
+    band(L, 36, W, 24, GREEN);
+    text(L + 12, 52, 11, `${title}  ${invoice.invoiceNo} (continued)`, { bold: true, color: [1, 1, 1] });
+    top = 74;
+  };
+  const ensure = (height: number) => { if (top + height > BOTTOM) newPage(); };
+
+  // Title band: document name, number and status
+  band(L, top, W, 40, GREEN);
+  text(L + 14, top + 26, 18, title, { bold: true, color: [1, 1, 1] });
+  text(R - 14, top + 16, 8, 'INVOICE NO.', { align: 'right', color: [0.85, 0.95, 0.93] });
+  text(R - 14, top + 31, 12, invoice.invoiceNo, { bold: true, align: 'right', color: [1, 1, 1] });
+  top += 40;
+  if (invoice.status === 'CANCELLED') { text(L + 14, top + 14, 9, 'CANCELLED', { bold: true, color: RED }); top += 4; }
+  top += 8;
+
+  // Date, due date, place of supply
+  const posCode = einvoice?.placeOfSupply || parties.placeOfSupply || parties.buyer?.stateCode || null;
+  const cell = (index: number, count: number, label: string, value: string, y: number, big = false) => {
+    const w = W / count; const x = L + index * w;
+    text(x + 10, y + 15, 7.5, label.toUpperCase(), { color: GREY });
+    text(x + 10, y + 32, big ? 12 : 10, value, { bold: true });
+  };
+  const showTerms = template.showPaymentTerms !== false;
+  const cells: Array<[string, string]> = [['Invoice date', istDate(invoice.date)]];
+  if (showTerms) cells.push(['Due date', invoice.dueDate ? istDate(invoice.dueDate) : '-']);
+  cells.push(['Place of supply', stateLine(posCode) || '-']);
+  if (invoice.salesOrder?.orderNo) cells.push(['Sales order', invoice.salesOrder.orderNo]);
+  box(L, top, W, 46);
+  cells.forEach(([label, value], index) => { if (index) vrule(L + (W / cells.length) * index, top, 46); cell(index, cells.length, label, value, top); });
+  top += 46 + 10;
+
+  // E-invoice: IRN, acknowledgement and the signed QR
+  if (einvoice?.signedQr && einvoice?.irn) {
+    const h = 112;
+    box(L, top, W, h);
+    text(L + 12, top + 17, 10, 'E-Invoice', { bold: true, color: GREEN });
+    rule(L + 12, R - 120, top + 23);
+    const irn = String(einvoice.irn);
+    text(L + 12, top + 40, 8.5, `IRN: ${irn.slice(0, 32)}`, { bold: true });
+    text(L + 12, top + 52, 8.5, `     ${irn.slice(32)}`, { bold: true });
+    text(L + 12, top + 70, 9, `Ack No: ${einvoice.ackNo || ''}`);
+    text(L + 12, top + 84, 9, `Ack Date: ${einvoice.ackDate ? istStamp(einvoice.ackDate) : ''}`);
+    text(L + 12, top + 100, 7.5, 'Registered on the e-invoice portal. Scan the QR to verify.', { color: GREY });
+    ops.push(qrOps(einvoice.signedQr, R - 104, PAGE_H - top - 8 - 96, 96));
+    top += h + 10;
   }
 
-  y -= 16;
-  lines.push(textLine(360, y, 10, `Subtotal: ${money(invoice.subtotal, invoice.currency)}`));
-  y -= 15;
-  lines.push(textLine(360, y, 10, `Tax: ${money(invoice.taxAmount, invoice.currency)}`));
-  y -= 15;
-  lines.push(textLine(360, y, 12, `Grand Total: ${money(invoice.grandTotal, invoice.currency)}`));
-  y -= 22;
-  if (invoice.terms) lines.push(textLine(48, y, 9, `Terms: ${String(invoice.terms).slice(0, 95)}`));
-  if (printFormat?.footer) lines.push(textLine(48, 42, 8, printFormat.footer));
+  // Seller and buyer (and ship-to)
+  const seller = { ...parties.seller, gstin: einvoice?.sellerGstin || parties.seller?.gstin };
+  const party = (x: number, w: number, y: number, label: string, p: any, height: number) => {
+    box(x, y, w, height);
+    text(x + 12, y + 16, 9, label, { bold: true, color: GREEN });
+    rule(x + 12, x + w - 12, y + 22);
+    text(x + 12, y + 37, 10, wrapText(p?.name || '-', w - 24, 10, 1, true)[0], { bold: true });
+    text(x + 12, y + 50, 8.5, `GSTIN ${p?.gstin || '-'}`, { color: GREY });
+    wrapText(p?.address || '', w - 24, 8.5, 2).forEach((line, i) => text(x + 12, y + 63 + i * 11, 8.5, line));
+    text(x + 12, y + 87, 8.5, [p?.city, p?.zip].filter(Boolean).join(' '));
+    text(x + 12, y + 99, 8, stateLine(p?.stateCode || (p?.gstin ? String(p.gstin).slice(0, 2) : null), p?.state), { color: GREY });
+  };
+  // Seller and bill-to side by side; a ship-to address makes it three columns.
+  const columns = parties.shipTo ? 3 : 2;
+  const gap = 10;
+  const colW = (W - gap * (columns - 1)) / columns;
+  ensure(116);
+  party(L, colW, top, 'Seller', seller, 108);
+  party(L + colW + gap, colW, top, 'Bill to', parties.buyer || { name: invoice.customer?.name }, 108);
+  if (parties.shipTo) party(L + 2 * (colW + gap), colW, top, 'Ship to', parties.shipTo, 108);
+  top += 108 + 10;
 
-  const stream = lines.join('\n');
-  const objects = [
+  // Items
+  const tableHead = () => {
+    band(L, top, W, 20, [0.94, 0.95, 0.96]);
+    const head = (x: number, label: string, align: 'left' | 'right' = 'left') => text(x, top + 13.5, 7.5, label.toUpperCase(), { bold: true, align, color: GREY });
+    head(L + 8, '#'); head(L + 26, 'Description'); head(L + 212, 'HSN/SAC'); head(L + 296, 'Qty', 'right'); head(L + 352, 'Rate', 'right'); head(L + 420, 'Taxable', 'right'); head(L + 458, 'Tax %', 'right'); head(R - 8, 'Amount', 'right');
+    top += 20;
+  };
+  ensure(60);
+  tableHead();
+  const items = invoice.items || [];
+  const rowH = 26;
+  items.forEach((item: any, index: number) => {
+    if (top + rowH > BOTTOM) { newPage(); tableHead(); }
+    const name = item.description || item.product?.name || item.itemCode || '';
+    const hsn = item.hsnCode || parties.hsnByProduct?.[item.productId] || item.product?.hsnCode || '';
+    text(L + 8, top + 12, 9, index + 1);
+    text(L + 26, top + 12, 9, wrapText(name, 175, 9, 1, true)[0] || '', { bold: true });
+    text(L + 26, top + 22, 7.5, item.itemCode || item.product?.sku || '', { color: GREY });
+    text(L + 212, top + 12, 9, hsn);
+    text(L + 296, top + 12, 9, num(item.quantity).toString().replace(/\.0+$/, ''), { align: 'right' });
+    text(L + 352, top + 12, 9, amount(item.rate ?? item.unitPrice), { align: 'right' });
+    text(L + 420, top + 12, 9, amount(item.netAmount), { align: 'right' });
+    text(L + 458, top + 12, 9, num(item.taxRate).toFixed(2), { align: 'right' });
+    text(R - 8, top + 12, 9, amount(item.total), { align: 'right' });
+    top += rowH;
+    rule(L, R, top);
+  });
+  // frame around the table body on each page it spans is kept simple: a rule under every row is enough.
+  top += 12;
+
+  // HSN summary (left) and totals (right)
+  const rightW = 240;
+  const rx = R - rightW;
+  const leftW = rx - L - 14;
+  const taxRows: Array<{ label: string; amount: number }> = [];
+  for (const tax of invoice.taxes || []) {
+    const existing = taxRows.find((row) => row.label === tax.label);
+    if (existing) existing.amount += num(tax.taxAmount); else taxRows.push({ label: String(tax.label), amount: num(tax.taxAmount) });
+  }
+  if (!taxRows.length && num(invoice.taxAmount) > 0) taxRows.push({ label: 'Tax', amount: num(invoice.taxAmount) });
+  const discount = num(invoice.discount);
+  const rounding = num(invoice.roundingAdjustment);
+  const paid = num(invoice.amountPaid);
+  const totalLines = 1 + taxRows.length + (discount ? 1 : 0) + (rounding ? 1 : 0) + (paid > 0 ? 2 : 0);
+  const totalsH = 44 + totalLines * 14;
+
+  const hsnRows = new Map<string, { taxable: number; tax: number; rate: number }>();
+  if (template.showHsnSummary !== false) {
+    for (const item of items) {
+      const hsn = item.hsnCode || parties.hsnByProduct?.[item.productId] || item.product?.hsnCode;
+      if (!hsn) continue;
+      const row = hsnRows.get(hsn) || { taxable: 0, tax: 0, rate: num(item.taxRate) };
+      row.taxable += num(item.netAmount); row.tax += num(item.taxAmount);
+      hsnRows.set(hsn, row);
+    }
+  }
+  const hsnList = Array.from(hsnRows.entries()).slice(0, 8);
+  const words = template.showAmountInWords !== false && isInr ? wrapText(amountInWords(num(invoice.grandTotal)), leftW - 24, 9, 3, true) : [];
+  const leftH = (words.length ? 28 + words.length * 12 : 0) + (hsnList.length ? 34 + hsnList.length * 15 : 0);
+  ensure(Math.max(totalsH, leftH) + 10);
+
+  // totals
+  box(rx, top, rightW, totalsH);
+  text(rx + 12, top + 16, 9, 'Summary', { bold: true, color: GREEN });
+  rule(rx + 12, R - 12, top + 22);
+  let y = top + 38;
+  const line = (label: string, value: number, strong = false) => { text(rx + 12, y, 9, label, { color: strong ? BLACK : GREY, bold: strong }); text(R - 12, y, 9, money(value), { align: 'right', bold: strong }); y += 14; };
+  line('Taxable value', num(invoice.subtotal));
+  taxRows.forEach((row) => line(row.label, row.amount));
+  if (discount) line('Discount', -discount);
+  if (rounding) line('Round off', rounding);
+  rule(rx + 12, R - 12, y - 6);
+  y += 4;
+  text(rx + 12, y, 10, 'Grand total', { bold: true });
+  text(R - 12, y, 11, money(invoice.grandTotal), { bold: true, align: 'right' });
+  y += 14;
+  if (paid > 0) { line('Paid', paid); line('Outstanding', num(invoice.outstandingAmount), true); }
+
+  // amount in words, HSN summary
+  let ly = top;
+  if (words.length) {
+    box(L, ly, leftW, 28 + words.length * 12);
+    text(L + 12, ly + 16, 9, 'Amount in words', { bold: true, color: GREEN });
+    words.forEach((w, i) => text(L + 12, ly + 32 + i * 12, 9, w, { bold: true }));
+    ly += 28 + words.length * 12 + 6;
+  }
+  if (hsnList.length) {
+    const h = 34 + hsnList.length * 15;
+    box(L, ly, leftW, h);
+    text(L + 12, ly + 16, 9, 'HSN summary', { bold: true, color: GREEN });
+    const hy = ly + 30;
+    text(L + 12, hy, 7.5, 'HSN/SAC', { bold: true, color: GREY }); text(L + leftW * 0.5, hy, 7.5, 'TAXABLE', { bold: true, color: GREY, align: 'right' });
+    text(L + leftW * 0.72, hy, 7.5, 'RATE %', { bold: true, color: GREY, align: 'right' }); text(L + leftW - 10, hy, 7.5, 'TAX', { bold: true, color: GREY, align: 'right' });
+    hsnList.forEach(([hsn, row], i) => {
+      const ry = hy + 14 + i * 15 - 3;
+      text(L + 12, ry + 2, 8.5, hsn); text(L + leftW * 0.5, ry + 2, 8.5, amount(row.taxable), { align: 'right' });
+      text(L + leftW * 0.72, ry + 2, 8.5, row.rate.toFixed(2), { align: 'right' }); text(L + leftW - 10, ry + 2, 8.5, amount(row.tax), { align: 'right' });
+    });
+    ly += h + 6;
+  }
+  top += Math.max(totalsH, ly - top) + 12;
+
+  // terms and notes
+  const noteText = [invoice.terms ? `Terms: ${invoice.terms}` : '', invoice.notes ? `Notes: ${invoice.notes}` : ''].filter(Boolean).join('   ');
+  if (showTerms && noteText) {
+    const noteLines = wrapText(noteText, W - 24, 8.5, 4);
+    ensure(24 + noteLines.length * 11);
+    box(L, top, W, 24 + noteLines.length * 11);
+    text(L + 12, top + 15, 9, 'Terms and notes', { bold: true, color: GREEN });
+    noteLines.forEach((l, i) => text(L + 12, top + 30 + i * 11, 8.5, l));
+    top += 24 + noteLines.length * 11 + 10;
+  }
+
+  // signature and footer
+  ensure(70);
+  text(R - 12, top + 14, 9, `For ${seller.name || ''}`, { bold: true, align: 'right' });
+  rule(R - 170, R - 12, top + 54);
+  text(R - 12, top + 66, 8, 'Authorised signatory', { align: 'right', color: GREY });
+  if (printFormat?.footer) text(L, top + 66, 8, wrapText(printFormat.footer, 300, 8, 1)[0], { color: GREY });
+
+  // page numbers
+  pages.forEach((pageOps, index) => {
+    ops = pageOps;
+    text(L, 826, 7.5, 'Computer generated invoice', { color: GREY });
+    text(R, 826, 7.5, `Page ${index + 1} of ${pages.length}`, { align: 'right', color: GREY });
+  });
+  return pdfFromPages(pages.map((p) => p.join('\n')));
+}
+
+// One PDF with a page per stream.
+function pdfFromPages(streams: string[]) {
+  const pageObject = (i: number) => 5 + i * 2;
+  const objects: string[] = [
     '<< /Type /Catalog /Pages 2 0 R >>',
-    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
-    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>',
+    `<< /Type /Pages /Kids [${streams.map((_, i) => `${pageObject(i)} 0 R`).join(' ')}] /Count ${streams.length} >>`,
     '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
-    `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>',
   ];
-
+  streams.forEach((stream, i) => {
+    objects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents ${pageObject(i) + 1} 0 R >>`);
+    objects.push(`<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream`);
+  });
   let pdf = '%PDF-1.4\n';
   const offsets = [0];
   objects.forEach((obj, index) => {
@@ -71,9 +329,7 @@ export function renderInvoicePdf(invoice: any, printFormat?: any) {
   });
   const xref = Buffer.byteLength(pdf);
   pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
-  offsets.slice(1).forEach((offset) => {
-    pdf += `${String(offset).padStart(10, '0')} 00000 n \n`;
-  });
+  offsets.slice(1).forEach((offset) => { pdf += `${String(offset).padStart(10, '0')} 00000 n \n`; });
   pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
   return Buffer.from(pdf);
 }
