@@ -6,8 +6,9 @@ import { generateCustomerNo } from '../utils/generate';
 import { serializeInvoice, serializeMoney } from '../utils/invoice';
 import { pickDefined } from '../utils/payload';
 import { computeCustomerPriority, emptyPriority, tierRank } from '../services/crm/customerPriority.service';
+import { isValidGstin, normalizeGstin, stateCodeOfGstin } from '../services/eway/ewayRules.service';
 
-const customerFields = ['name', 'email', 'phone', 'contactId', 'address', 'city', 'state', 'country', 'zip', 'taxId', 'gstin', 'stateCode', 'currency', 'creditLimit', 'paymentTerms', 'notes', 'isActive'] as const;
+const customerFields = ['name', 'email', 'phone', 'contactId', 'address', 'city', 'state', 'country', 'zip', 'taxId', 'gstin', 'stateCode', 'isSez', 'currency', 'creditLimit', 'paymentTerms', 'notes', 'isActive'] as const;
 
 export const getCustomers = async (req: Request, res: Response) => {
   try {
@@ -103,7 +104,21 @@ export const updateCustomer = async (req: Request, res: Response) => {
   }
 };
 
-const addressFields = ['label', 'address', 'city', 'state', 'stateCode', 'country', 'zip'] as const;
+const addressFields = ['label', 'address', 'city', 'state', 'stateCode', 'gstin', 'country', 'zip'] as const;
+
+// A ship-to GSTIN is stored trimmed and upper-case, must be a valid GSTIN, and must belong to the address's state when
+// that is given. An empty value clears it. Returns an error message for the caller to send as a 400.
+function shipToGstinProblem(data: any) {
+  if (!Object.prototype.hasOwnProperty.call(data, 'gstin')) return null;
+  const gstin = normalizeGstin(data.gstin);
+  if (!gstin) { data.gstin = null; return null; }
+  if (!isValidGstin(gstin)) return `Ship-to GSTIN "${gstin}" is not a valid GSTIN`;
+  const state = stateCodeOfGstin(gstin);
+  if (data.stateCode && String(data.stateCode).trim() !== state) return `Ship-to GSTIN belongs to state ${state}, but the address state code is ${data.stateCode}`;
+  data.gstin = gstin;
+  data.stateCode = state;
+  return null;
+}
 
 // The customer's own address is always the first choice; saved ones follow it.
 export const getCustomerAddresses = async (req: Request, res: Response) => {
@@ -111,7 +126,7 @@ export const getCustomerAddresses = async (req: Request, res: Response) => {
     const customer = await prisma.customer.findUnique({ where: { id: req.params.id }, include: { addresses: { orderBy: { createdAt: 'asc' } } } });
     if (!customer) return error(res, 'Customer not found', 404);
     const primary = customer.address
-      ? [{ id: 'primary', label: 'Primary address', address: customer.address, city: customer.city, state: customer.state, stateCode: customer.stateCode, country: customer.country, zip: customer.zip }]
+      ? [{ id: 'primary', label: 'Primary address', address: customer.address, city: customer.city, state: customer.state, stateCode: customer.stateCode, gstin: customer.gstin, country: customer.country, zip: customer.zip }]
       : [];
     return success(res, [...primary, ...customer.addresses]);
   } catch (err: any) {
@@ -122,6 +137,8 @@ export const getCustomerAddresses = async (req: Request, res: Response) => {
 export const createCustomerAddress = async (req: Request, res: Response) => {
   try {
     const data = pickDefined(req.body, addressFields) as any;
+    const gstinProblem = shipToGstinProblem(data);
+    if (gstinProblem) return error(res, gstinProblem, 400);
     if (!data.address || !String(data.address).trim()) return error(res, 'Address is required', 400);
     const address = await prisma.customerAddress.create({ data: { ...data, label: data.label?.trim() || data.city || 'Address', customerId: req.params.id } });
     return success(res, address, 'Address added', 201);

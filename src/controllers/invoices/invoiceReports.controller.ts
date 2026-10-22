@@ -4,6 +4,7 @@ import { error } from '../../utils/response';
 import { handlePrismaError } from '../../utils/prismaError';
 import { serializeMoney } from '../../utils/invoice';
 import { renderInvoicePdf } from '../../utils/pdf';
+import { currentCompanyId } from '../../utils/tenant';
 import { invoiceInclude } from './shared';
 
 export const getInvoicePdf = async (req: Request, res: Response) => {
@@ -17,9 +18,24 @@ export const getInvoicePdf = async (req: Request, res: Response) => {
         where: { docType: 'SALES_INVOICE', isActive: true, isDefault: true },
         orderBy: { createdAt: 'asc' },
       });
+    const einvoice = await prisma.eInvoice.findFirst({ where: { salesInvoiceId: invoice.id, status: 'GENERATED' }, select: { irn: true, ackNo: true, ackDate: true, signedQr: true, sellerGstin: true, placeOfSupply: true } });
+    // The seller, the buyer's full details and the HSN codes are not part of the invoice read; they are fetched for the print.
+    const companyId = currentCompanyId();
+    const [company, customer, products] = await Promise.all([
+      companyId ? prisma.company.findUnique({ where: { id: companyId } }) : prisma.company.findFirst({}),
+      prisma.customer.findUnique({ where: { id: invoice.customerId } }),
+      prisma.product.findMany({ where: { id: { in: invoice.items.map((item: any) => item.productId) } }, select: { id: true, hsnCode: true } }),
+    ]);
+    const snapshot: any = (invoice as any).shippingAddressSnapshot;
+    const parties = {
+      seller: company ? { name: company.legalName || company.name, gstin: company.gstin, address: company.address, city: company.city, state: company.state, zip: company.zip } : null,
+      buyer: customer ? { name: customer.name, gstin: customer.gstin || customer.taxId, address: customer.address, city: customer.city, state: customer.state, stateCode: customer.stateCode, zip: customer.zip } : null,
+      shipTo: snapshot && snapshot.address ? { name: customer?.name, gstin: snapshot.gstin, address: snapshot.address, city: snapshot.city, state: snapshot.state, stateCode: snapshot.stateCode, zip: snapshot.zip } : null,
+      hsnByProduct: Object.fromEntries(products.map((product) => [product.id, product.hsnCode])),
+    };
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="${invoice.invoiceNo}.pdf"`);
-    return res.send(renderInvoicePdf(invoice, printFormat));
+    return res.send(renderInvoicePdf(invoice, printFormat, einvoice, parties));
   } catch (err: any) {
     return handlePrismaError(res, err);
   }

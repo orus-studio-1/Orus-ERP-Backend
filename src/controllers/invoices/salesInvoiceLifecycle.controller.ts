@@ -7,6 +7,7 @@ import { audit, postStockOut, resolveAndSnapshotInvoiceTaxes } from '../../utils
 import { invoiceInclude, invoiceResponse, postInvoiceLedger } from './shared';
 import { markSalesOrderBilled, refreshSalesOrderProgress } from '../../services/sales/salesOrder.service';
 import { assertNoLiveEwayBill } from '../../services/eway/ewayBill.service';
+import { assertNoLiveEInvoice } from '../../services/einvoice/einvoice.service';
 
 export const updateInvoiceStatus = async (req: Request, res: Response) => {
   try {
@@ -35,6 +36,7 @@ export const updateInvoiceStatus = async (req: Request, res: Response) => {
         if (existing.status === 'DRAFT') throw new Error('Delete draft invoices instead of cancelling');
         if (existing.status === 'CANCELLED') throw new Error('Invoice is already cancelled');
         await assertNoLiveEwayBill(tx, { salesInvoiceId: existing.id });
+        await assertNoLiveEInvoice(tx, { salesInvoiceId: existing.id });
         const [legacyPayments, submittedAllocations] = await Promise.all([
           tx.payment.count({ where: { invoiceId: existing.id } }),
           tx.paymentEntryAllocation.count({ where: { invoiceId: existing.id, paymentEntry: { status: 'SUBMITTED' } } }),

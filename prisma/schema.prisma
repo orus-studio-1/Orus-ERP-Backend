@@ -116,6 +116,7 @@ model Company {
   pan             String?
   cin             String?
   fiscalYearStart Int      @default(4)
+  einvoiceExempt  Boolean  @default(false)
   name            String
   slug            String   @unique
   email           String?
@@ -180,6 +181,7 @@ model Branch {
   code            String
   name            String
   gstin           String?
+  einvoiceExempt  Boolean  @default(false)
   address         Json?
   isManufacturing Boolean  @default(false)
   isActive        Boolean  @default(true)
@@ -2701,6 +2703,7 @@ model Customer {
   taxId         String?
   gstin         String?
   stateCode     String?
+  isSez         Boolean  @default(false)
   currency      String   @default("USD")
   creditLimit   Decimal  @default(0) @db.Decimal(18, 6)
   paymentTerms  Int      @default(30)
@@ -2738,6 +2741,7 @@ model CustomerAddress {
   city       String?
   state      String?
   stateCode  String?
+  gstin      String?
   country    String?
   zip        String?
   createdAt  DateTime @default(now())
@@ -3137,6 +3141,7 @@ model SalesInvoice {
   auditLogs          AuditLog[]
   subscriptionRuns   SubscriptionInvoiceRun[]
   ewayBills          EwayBill[]
+  einvoices          EInvoice[]
 
   @@index([customerId, status, paymentStatus])
   @@index([salesOrderId])
@@ -3405,6 +3410,7 @@ model CreditNote {
   paymentAllocations PaymentEntryAllocation[]
   ledgerEntries      GeneralLedgerEntry[]
   auditLogs          AuditLog[]
+  einvoices          EInvoice[]
 
   @@index([customerId, status])
   @@index([originalInvoiceId])
@@ -5704,4 +5710,216 @@ model EwayBillEvent {
   createdAt  DateTime @default(now())
 
   @@index([ewayBillId, createdAt])
+}
+
+// ===================== E-INVOICE (IRN + SIGNED QR) =====================
+// Manual mode, like the e-way bill: the ERP prepares and validates the e-invoice, exports the portal's bulk-upload
+// file, and the user brings the portal's result (IRN, acknowledgement, signed QR) back. API mode is reserved.
+enum EInvoiceStatus {
+  DRAFT
+  EXPORTED
+  GENERATED
+  FAILED
+  CANCELLED
+}
+
+enum EInvoiceSourceType {
+  SALES_INVOICE
+  CREDIT_NOTE
+}
+
+enum EInvoiceOverrideMode {
+  NONE
+  FORCE_ON
+  FORCE_OFF
+}
+
+model EInvoiceConfig {
+  id                   String               @id @default(cuid())
+  companyId            String?              @unique
+  mode                 String               @default("MANUAL")
+  provider             String?
+  hardBlockOnSubmit    Boolean              @default(false)
+  overrideMode         EInvoiceOverrideMode @default(NONE)
+  overrideReason       String?
+  overrideById         String?
+  overrideAt           DateTime?
+  followUpDays         Int                  @default(2)
+  credentialsEncrypted String?
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+}
+
+// Effective-dated statutory settings. A rule change is a new row; a row is never edited once created (only CA sign-off is added).
+model EInvoiceRuleVersion {
+  id                           String    @id @default(cuid())
+  companyId                    String?
+  effectiveFrom                DateTime
+  effectiveTo                  DateTime?
+  turnoverThreshold            Decimal   @db.Decimal(18, 2)
+  reportingWindowDays          Int
+  reportingWindowTurnoverFloor Decimal?  @db.Decimal(18, 2)
+  warnAtPercents               Int[]     @default([50, 80])
+  cancelWindowHours            Int
+  maxDocNoLength               Int       @default(16)
+  shipToGstinMandatoryFrom     DateTime?
+  schemaVersion                String?
+  verifiedByCa                 Boolean   @default(false)
+  caName                       String?
+  caVerifiedAt                 DateTime?
+  caReference                  String?
+  notes                        String?
+  createdById                  String?
+  createdAt                    DateTime  @default(now())
+
+  @@unique([companyId, effectiveFrom])
+  @@index([companyId, effectiveFrom])
+}
+
+// Declared aggregate annual turnover per PAN and financial year (the CA confirms it).
+model EInvoiceTurnover {
+  id                String   @id @default(cuid())
+  companyId         String?
+  pan               String
+  financialYear     String
+  aggregateTurnover Decimal  @default(0) @db.Decimal(18, 2)
+  notes             String?
+  updatedById       String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([companyId, pan, financialYear])
+}
+
+model EInvoice {
+  id                String             @id @default(cuid())
+  companyId         String?
+  status            EInvoiceStatus     @default(DRAFT)
+  source            String             @default("MANUAL")
+  sourceType        EInvoiceSourceType
+  salesInvoiceId    String?
+  salesInvoice      SalesInvoice?      @relation(fields: [salesInvoiceId], references: [id])
+  creditNoteId      String?
+  creditNote        CreditNote?        @relation(fields: [creditNoteId], references: [id])
+  docType           String             @default("INV")
+  docNo             String
+  docDate           DateTime
+  financialYear     String
+  supplyType        String             @default("B2B")
+  reverseCharge     Boolean            @default(false)
+  precedingDocNo    String?
+  precedingDocDate  DateTime?
+  sellerGstin       String
+  sellerName        String?
+  sellerAddr1       String?
+  sellerAddr2       String?
+  sellerPlace       String?
+  sellerPincode     String?
+  sellerStateCode   String?
+  buyerGstin        String
+  buyerName         String?
+  buyerAddr1        String?
+  buyerAddr2        String?
+  buyerPlace        String?
+  buyerPincode      String?
+  buyerStateCode    String?
+  placeOfSupply     String?
+  hasShipTo         Boolean            @default(false)
+  shipToGstin       String?
+  shipToName        String?
+  shipToAddr1       String?
+  shipToAddr2       String?
+  shipToPlace       String?
+  shipToPincode     String?
+  shipToStateCode   String?
+  taxableValue      Decimal            @default(0) @db.Decimal(18, 6)
+  cgstValue         Decimal            @default(0) @db.Decimal(18, 6)
+  sgstValue         Decimal            @default(0) @db.Decimal(18, 6)
+  igstValue         Decimal            @default(0) @db.Decimal(18, 6)
+  cessValue         Decimal            @default(0) @db.Decimal(18, 6)
+  discountValue     Decimal            @default(0) @db.Decimal(18, 6)
+  otherCharges      Decimal            @default(0) @db.Decimal(18, 6)
+  roundOff          Decimal            @default(0) @db.Decimal(18, 6)
+  totalValue        Decimal            @default(0) @db.Decimal(18, 6)
+  payload           Json?
+  irn               String?            @unique
+  ackNo             String?
+  ackDate           DateTime?
+  signedInvoice     String?
+  signedQr          String?
+  errorCode         String?
+  errorMessage      String?
+  exportedAt        DateTime?
+  reportingDeadline DateTime?
+  ruleVersionId     String?
+  cancelDeadline    DateTime?
+  cancelledAt       DateTime?
+  cancelReasonCode  String?
+  cancelRemark      String?
+  createdById       String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  items  EInvoiceItem[]
+  events EInvoiceEvent[]
+
+  @@index([companyId, status])
+  @@index([salesInvoiceId])
+  @@index([creditNoteId])
+  @@index([companyId, docNo])
+  @@index([companyId, reportingDeadline])
+}
+
+model EInvoiceItem {
+  id             String   @id @default(cuid())
+  einvoiceId     String
+  einvoice       EInvoice @relation(fields: [einvoiceId], references: [id], onDelete: Cascade)
+  slNo           Int
+  productId      String?
+  productName    String
+  description    String?
+  isService      Boolean  @default(false)
+  hsnCode        String   @default("")
+  quantity       Decimal  @db.Decimal(18, 6)
+  unit           String   @default("")
+  unitPrice      Decimal  @db.Decimal(18, 6)
+  grossAmount    Decimal  @db.Decimal(18, 6)
+  discount       Decimal  @default(0) @db.Decimal(18, 6)
+  taxableAmount  Decimal  @db.Decimal(18, 6)
+  cgstRate       Decimal  @default(0) @db.Decimal(9, 4)
+  sgstRate       Decimal  @default(0) @db.Decimal(9, 4)
+  igstRate       Decimal  @default(0) @db.Decimal(9, 4)
+  cessRate       Decimal  @default(0) @db.Decimal(9, 4)
+  cgstAmount     Decimal  @default(0) @db.Decimal(18, 6)
+  sgstAmount     Decimal  @default(0) @db.Decimal(18, 6)
+  igstAmount     Decimal  @default(0) @db.Decimal(18, 6)
+  cessAmount     Decimal  @default(0) @db.Decimal(18, 6)
+  totalItemValue Decimal  @default(0) @db.Decimal(18, 6)
+
+  @@index([einvoiceId])
+}
+
+model EInvoiceEvent {
+  id         String   @id @default(cuid())
+  companyId  String?
+  einvoiceId String
+  einvoice   EInvoice @relation(fields: [einvoiceId], references: [id], onDelete: Cascade)
+  type       String
+  data       Json?
+  userId     String?
+  createdAt  DateTime @default(now())
+
+  @@index([einvoiceId, createdAt])
+}
+
+// Remembers which reporting-window warning (50, 80, 100 per cent) was already sent for a document, so each goes out once.
+model EInvoiceWarning {
+  id        String   @id @default(cuid())
+  companyId String?
+  sourceKey String
+  level     Int
+  sentAt    DateTime @default(now())
+
+  @@unique([sourceKey, level])
+  @@index([companyId])
 }

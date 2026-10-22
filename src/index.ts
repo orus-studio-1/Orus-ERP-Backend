@@ -43,6 +43,7 @@ import { processSalesExpiry } from './services/sales/jobs';
 import { processInventoryMonitoring } from './services/inventory/jobs';
 import { processProcurementMonitoring } from './services/procurement/jobs';
 import { markExpiredBills } from './services/eway/ewayBill.service';
+import { runEInvoiceSweep } from './services/einvoice/einvoiceJobs';
 
 const app = express();
 app.set('trust proxy', 1);
@@ -158,6 +159,7 @@ if (process.env.ENABLE_BACKGROUND_WORKER !== 'false') {
   setInterval(() => processSalesExpiry().catch((err) => console.error('Sales expiry worker failed', err)), 60_000);
   setInterval(() => processInventoryMonitoring().catch((err) => console.error('Inventory monitoring worker failed', err)), 60 * 60 * 1000);
   setInterval(() => markExpiredBills().catch((err) => console.error('E-way bill expiry sweep failed', err)), 60 * 60 * 1000);
+  setInterval(() => runEInvoiceSweep().catch((err) => console.error('E-invoice sweep failed', err)), 60 * 60 * 1000);
   setInterval(() => processProcurementMonitoring().catch((err) => console.error('Procurement monitoring worker failed', err)), 60 * 60 * 1000);
 }
 

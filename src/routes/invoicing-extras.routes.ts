@@ -25,6 +25,7 @@ import {
 } from '../controllers/invoicingExtras.controller';
 import { authenticate, authorize, requireModuleAccess } from '../middleware/auth';
 import ewayRoutes from './eway.routes';
+import einvoiceRoutes from './einvoice.routes';
 
 const router = Router();
 router.use(authenticate);
@@ -39,6 +40,7 @@ router.route('/credit-notes/:id').get(getCreditNote).put(updateCreditNote).patch
 router.patch('/credit-notes/:id/status', updateCreditNoteStatus);
 
 router.use('/eway-bills', ewayRoutes);
+router.use('/einvoice', einvoiceRoutes);
 
 router.get('/ledger', getLedgerEntries);
 router.get('/audit-logs', getAuditLogs);

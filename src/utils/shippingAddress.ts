@@ -4,5 +4,5 @@ export async function resolveShippingSnapshot(tx: any, customerId: string, shipp
   if (!shippingAddressId || shippingAddressId === 'primary') return undefined;
   const saved = await tx.customerAddress.findFirst({ where: { id: shippingAddressId, customerId } });
   if (!saved) throw new Error('Shipping address not found for this customer');
-  return { label: saved.label, address: saved.address, city: saved.city, state: saved.state, stateCode: saved.stateCode, country: saved.country, zip: saved.zip };
+  return { label: saved.label, address: saved.address, city: saved.city, state: saved.state, stateCode: saved.stateCode, gstin: saved.gstin, country: saved.country, zip: saved.zip };
 }
