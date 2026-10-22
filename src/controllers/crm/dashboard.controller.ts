@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import prisma from '../../lib/prisma';
 import { success } from '../../utils/response';
 import { handlePrismaError } from '../../utils/prismaError';
+import { OPEN_LEAD_STATUSES } from './shared';
 
 export const getCrmDashboard = async (_req: Request, res: Response) => {
   try {
@@ -42,12 +43,12 @@ export const getCrmDashboard = async (_req: Request, res: Response) => {
       prisma.activity.count({ where: { status: { in: ['PLANNED', 'IN_PROGRESS'] }, dueDate: { lte: todayEnd, gte: new Date(now.getFullYear(), now.getMonth(), now.getDate()) } } }),
       prisma.lead.count({
         where: {
-          status: { in: ['NEW', 'CONTACTED', 'QUALIFIED'] },
+          status: { in: OPEN_LEAD_STATUSES as any },
           OR: [{ lastContactedAt: null }, { lastContactedAt: { lt: staleDate } }],
         },
       }),
       prisma.lead.findMany({
-        where: { status: { in: ['NEW', 'CONTACTED', 'QUALIFIED'] } },
+        where: { status: { in: OPEN_LEAD_STATUSES as any } },
         select: {
           id: true, title: true, firstName: true, lastName: true, company: true, source: true, status: true, priority: true, value: true, score: true, lastContactedAt: true,
           assignedTo: { select: { firstName: true, lastName: true, email: true } },

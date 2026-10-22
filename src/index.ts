@@ -36,80 +36,28 @@ import manufacturingRoutes from './routes/manufacturing.routes';
 import { idempotency, mutationAudit, requestContext } from './middleware/platform';
 import { runDueSubscriptionsJob } from './controllers/invoicingExtras.controller';
 import prisma from './lib/prisma';
+import { buildCorsOptions } from './config/cors';
 import { workOne } from './services/platform/job.service';
 import { processCrmReminders } from './services/crm/jobs';
 import { processSalesExpiry } from './services/sales/jobs';
 import { processInventoryMonitoring } from './services/inventory/jobs';
 import { processProcurementMonitoring } from './services/procurement/jobs';
+import { markExpiredBills } from './services/eway/ewayBill.service';
 
 const app = express();
 app.set('trust proxy', 1);
 
 app.use(helmet());
 
-const normalizeOrigin = (value: string) => value.trim().replace(/\/$/, '');
-const rootDomain = process.env.ROOT_DOMAIN || 'erp.com';
-
-const configuredOrigins = [
-  process.env.FRONTEND_URL,
-  process.env.MARKETING_URL,
-  process.env.CORS_ORIGINS,
-]
-  .filter(Boolean)
-  .flatMap((value) => String(value).split(','))
-  .map(normalizeOrigin)
-  .filter(Boolean);
-
-const allowedExplicitOrigins = new Set([
-  'http://localhost:3000',
-  'http://localhost:3001',
-  'http://localhost:8081',
-  'http://127.0.0.1:3000',
-  'http://127.0.0.1:3001',
-  'http://127.0.0.1:8081',
-  'https://erp-frontend-green.vercel.app',
-  'https://erp-frontend-beryl.vercel.app',
-  ...configuredOrigins,
-]);
-
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      // Allow non-browser requests (e.g. mobile apps, server-to-server, curl, Postman)
-      if (!origin) return callback(null, true);
-
-      const normalized = normalizeOrigin(origin);
-      if (allowedExplicitOrigins.has(normalized)) {
-        return callback(null, true);
-      }
-
-      try {
-        const parsed = new URL(origin);
-        const host = parsed.hostname;
-
-        // Allow localhost and any *.localhost subdomains on any port (for multi-tenant local dev)
-        if (host === 'localhost' || host.endsWith('.localhost') || host === '127.0.0.1') {
-          return callback(null, true);
-        }
-
-        // Allow production root domain and all *.rootDomain subdomains (e.g. *.erp.com)
-        if (host === rootDomain || host.endsWith(`.${rootDomain}`)) {
-          return callback(null, true);
-        }
-      } catch {
-        // Fall through
-      }
-
-      return callback(new Error('Origin is not allowed by CORS'));
-    },
-    credentials: true,
-  })
-);
+app.use(cors(buildCorsOptions()));
 
 app.use(morgan('dev'));
 app.use(cookieParser());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+// Express 5 leaves req.body undefined for a request that sends no body (a POST with only an id in the URL,
+// like creating a delivery or an invoice from a sales order), so handlers reading req.body.items crashed.
+app.use((req, _res, next) => { req.body ??= {}; next(); });
 app.use(requestContext);
 app.use(mutationAudit);
 
@@ -209,6 +157,7 @@ if (process.env.ENABLE_BACKGROUND_WORKER !== 'false') {
   setInterval(() => processCrmReminders().catch((err) => console.error('CRM reminder worker failed', err)), 60_000);
   setInterval(() => processSalesExpiry().catch((err) => console.error('Sales expiry worker failed', err)), 60_000);
   setInterval(() => processInventoryMonitoring().catch((err) => console.error('Inventory monitoring worker failed', err)), 60 * 60 * 1000);
+  setInterval(() => markExpiredBills().catch((err) => console.error('E-way bill expiry sweep failed', err)), 60 * 60 * 1000);
   setInterval(() => processProcurementMonitoring().catch((err) => console.error('Procurement monitoring worker failed', err)), 60 * 60 * 1000);
 }
 

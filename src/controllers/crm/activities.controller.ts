@@ -54,8 +54,9 @@ async function touchLeadAfterActivity(tx: any, activity: any) {
   const contactTypes = ['CALL', 'EMAIL', 'MEETING', 'FOLLOW_UP'];
   const data: any = {};
   if (contactTypes.includes(activity.type) && activity.status === 'COMPLETED') data.lastContactedAt = activity.completedAt || new Date();
-  if (activity.type === 'CALL' || activity.type === 'EMAIL') data.status = 'CONTACTED';
   if (Object.keys(data).length) await tx.lead.update({ where: { id: activity.leadId }, data });
+  // A call or email only moves a brand new lead to Open; later statuses (Interested, Quotation...) stay.
+  if (activity.type === 'CALL' || activity.type === 'EMAIL') await tx.lead.updateMany({ where: { id: activity.leadId, status: 'LEAD' }, data: { status: 'OPEN' } });
 }
 
 export const getActivities = async (req: Request, res: Response) => {

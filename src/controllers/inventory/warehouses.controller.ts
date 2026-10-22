@@ -21,7 +21,7 @@ export const createWarehouse = async (req: Request, res: Response) => {
     const name = String(req.body.name || '').trim();
     const code = String(req.body.code || '').trim().toUpperCase();
     if (!name || !code) return error(res, 'Warehouse name and code are required.', 400);
-    const wh = await prisma.warehouse.create({ data: { ...pickDefined(req.body, ['companyId', 'tenantId', 'branchId', 'plantId', 'parentId', 'type', 'stockType', 'locationPath', 'address', 'city', 'country', 'isDefault', 'isActive']), name, code } as any });
+    const wh = await prisma.warehouse.create({ data: { ...pickDefined(req.body, ['companyId', 'tenantId', 'branchId', 'plantId', 'parentId', 'type', 'stockType', 'locationPath', 'address', 'city', 'country', 'stateCode', 'pincode', 'gstin', 'isDefault', 'isActive']), name, code } as any });
     return success(res, wh, 'Warehouse created', 201);
   } catch (err: any) {
     return handlePrismaError(res, err);
@@ -30,7 +30,7 @@ export const createWarehouse = async (req: Request, res: Response) => {
 
 export const updateWarehouse = async (req: Request, res: Response) => {
   try {
-    const wh = await prisma.warehouse.update({ where: { id: req.params.id }, data: pickDefined(req.body, ['name', 'code', 'companyId', 'tenantId', 'branchId', 'plantId', 'parentId', 'type', 'stockType', 'locationPath', 'address', 'city', 'country', 'isDefault', 'isActive']) as any });
+    const wh = await prisma.warehouse.update({ where: { id: req.params.id }, data: pickDefined(req.body, ['name', 'code', 'companyId', 'tenantId', 'branchId', 'plantId', 'parentId', 'type', 'stockType', 'locationPath', 'address', 'city', 'country', 'stateCode', 'pincode', 'gstin', 'isDefault', 'isActive']) as any });
     return success(res, wh, 'Warehouse updated');
   } catch (err: any) {
     return handlePrismaError(res, err);

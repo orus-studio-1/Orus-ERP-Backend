@@ -6,6 +6,7 @@ import { handlePrismaError } from '../../utils/prismaError';
 import { audit, postStockOut, resolveAndSnapshotInvoiceTaxes } from '../../utils/erp';
 import { invoiceInclude, invoiceResponse, postInvoiceLedger } from './shared';
 import { markSalesOrderBilled, refreshSalesOrderProgress } from '../../services/sales/salesOrder.service';
+import { assertNoLiveEwayBill } from '../../services/eway/ewayBill.service';
 
 export const updateInvoiceStatus = async (req: Request, res: Response) => {
   try {
@@ -33,6 +34,7 @@ export const updateInvoiceStatus = async (req: Request, res: Response) => {
       if (status === 'CANCELLED') {
         if (existing.status === 'DRAFT') throw new Error('Delete draft invoices instead of cancelling');
         if (existing.status === 'CANCELLED') throw new Error('Invoice is already cancelled');
+        await assertNoLiveEwayBill(tx, { salesInvoiceId: existing.id });
         const [legacyPayments, submittedAllocations] = await Promise.all([
           tx.payment.count({ where: { invoiceId: existing.id } }),
           tx.paymentEntryAllocation.count({ where: { invoiceId: existing.id, paymentEntry: { status: 'SUBMITTED' } } }),
@@ -131,6 +133,8 @@ export const amendInvoice = async (req: Request, res: Response) => {
         include: invoiceInclude,
       });
       await audit(tx, req, { entityType: 'SALES_INVOICE', entityId: amended.id, invoiceId: amended.id, action: 'AMEND', statusAfter: 'DRAFT', message: `Amended from ${existing.invoiceNo}` });
+      // The cancelled original gets its own entry too, so its history shows that it was amended.
+      await audit(tx, req, { entityType: 'SALES_INVOICE', entityId: existing.id, invoiceId: existing.id, action: 'AMEND', statusBefore: existing.status, statusAfter: existing.status, message: `Amended into ${amended.invoiceNo}` });
       return amended;
     });
     return success(res, invoiceResponse(invoice), 'Invoice amended', 201);

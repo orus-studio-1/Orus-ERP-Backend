@@ -5,11 +5,12 @@ import { success, error } from '../../utils/response';
 import { handlePrismaError } from '../../utils/prismaError';
 import { calculateInvoiceTotals } from '../../utils/invoice';
 import { audit } from '../../utils/erp';
+import { resolveShippingSnapshot } from '../../utils/shippingAddress';
 import { invoiceInclude, invoiceResponse, nextDocumentNo, normalizeInvoiceItems } from './shared';
 
 export const createInvoice = async (req: Request, res: Response) => {
   try {
-    const { customerId, salesOrderId, date, dueDate, items = [], notes, terms, currency, discount, assignedToId, tags = [] } = req.body;
+    const { customerId, salesOrderId, date, dueDate, items = [], notes, terms, currency, discount, assignedToId, tags = [], shippingAddressId } = req.body;
     if (!customerId) return error(res, 'customerId is required', 400);
     if (!items.length) return error(res, 'At least one invoice item is required', 400);
     const userId = (req as any).user?.id;
@@ -18,11 +19,13 @@ export const createInvoice = async (req: Request, res: Response) => {
       const invoiceNo = await nextDocumentNo(tx, 'SALES_INVOICE');
       const normalizedItems = await normalizeInvoiceItems(tx, items);
       const totals = calculateInvoiceTotals(normalizedItems, discount);
+      const shippingAddressSnapshot = await resolveShippingSnapshot(tx, customerId, shippingAddressId);
       const created = await tx.salesInvoice.create({
         data: {
           invoiceNo,
           customerId,
           salesOrderId,
+          shippingAddressSnapshot,
           date: date ? new Date(date) : new Date(),
           dueDate: dueDate ? new Date(dueDate) : undefined,
           status: 'DRAFT',
@@ -64,6 +67,14 @@ export const createInvoiceFromSalesOrder = async (req: Request, res: Response) =
       });
       if (!order) throw new Error('Sales order not found');
       if (order.status === 'DRAFT' || order.status === 'CANCELLED') throw new Error('Only confirmed sales orders can be invoiced');
+
+      // A double click sends two requests: one at a time per order, and a draft that is already waiting for
+      // this order is returned instead of making a second one. Invoicing part of the order is still allowed.
+      await tx.$executeRawUnsafe('SELECT pg_advisory_xact_lock(hashtext($1))', `invoice-from-order:${order.id}`);
+      if (!(req.body.items || []).length) {
+        const waiting = await tx.salesInvoice.findFirst({ where: { salesOrderId: order.id, status: 'DRAFT' }, include: invoiceInclude, orderBy: { createdAt: 'desc' } });
+        if (waiting) return waiting;
+      }
 
       const invoiceNo = await nextDocumentNo(tx, 'SALES_INVOICE');
       const requested = new Map((req.body.items || []).map((i: any) => [i.salesOrderItemId || i.id, new Prisma.Decimal(i.quantity)]));
@@ -148,6 +159,7 @@ export const createInvoiceFromDeliveryNote = async (req: Request, res: Response)
           customerId: note.customerId,
           salesOrderId: note.salesOrderId,
           deliveryNoteId: note.id,
+          shippingAddressSnapshot: (note.shippingAddressSnapshot as any) ?? undefined,
           date: new Date(),
           dueDate: note.salesOrder?.deliveryDate,
           status: 'DRAFT',

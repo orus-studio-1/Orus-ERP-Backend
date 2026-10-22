@@ -4,13 +4,19 @@ import { success, paginated, error } from '../../utils/response';
 import { handlePrismaError } from '../../utils/prismaError';
 import { AuthRequest } from '../../middleware/auth';
 import {
+  addMissingPhones,
   csvToObjects,
   ensureOrganization,
   findDuplicateLead,
+  findExistingContact,
   leadInclude,
   logCrmActivity,
   normalizeLeadRow,
+  normalizeLeadStatus,
+  phoneRowsOf,
+  replacePhones,
   resolveLeadAssignee,
+  resolveTerritory,
   titleFromLead,
   validateLead,
 } from './shared';
@@ -18,7 +24,7 @@ import { generateCustomerNo } from '../../utils/generate';
 import { crmScopeWhere } from './scope';
 
 const LEAD_WRITE_FIELDS = [
-  'title', 'firstName', 'lastName', 'email', 'phone', 'company', 'city', 'country',
+  'title', 'firstName', 'lastName', 'email', 'phone', 'company', 'jobTitle', 'city', 'country',
   'source', 'status', 'priority', 'value', 'score', 'tags', 'lostReason',
   'lostReasonId', 'territory', 'productInterest', 'campaign', 'notes', 'assignedToId',
 ] as const;
@@ -34,10 +40,18 @@ function leadWriteData(source: Record<string, any>) {
 async function ensureCustomerForLead(tx: any, lead: any, contact: any) {
   let customer = contact?.id ? await tx.customer.findFirst({ where: { contactId: contact.id } }) : null;
   if (!customer && lead.email) customer = await tx.customer.findFirst({ where: { email: { equals: lead.email, mode: 'insensitive' } } });
+  // Another person from the same company: the company already has a customer from an earlier deal.
+  if (!customer && lead.organizationId) {
+    const earlier = await tx.opportunity.findFirst({ where: { organizationId: lead.organizationId, customerId: { not: null } }, orderBy: { createdAt: 'asc' }, select: { customerId: true } });
+    if (earlier?.customerId) customer = await tx.customer.findFirst({ where: { id: earlier.customerId } });
+  }
+  // A customer added by hand (no lead, so no earlier deal) under the company's name.
+  if (!customer && lead.company?.trim()) customer = await tx.customer.findFirst({ where: { name: { equals: lead.company.trim(), mode: 'insensitive' } } });
   if (customer) {
-    if (!customer.contactId && contact?.id) {
-      customer = await tx.customer.update({ where: { id: customer.id }, data: { contactId: contact.id } });
-    }
+    const patch: Record<string, any> = {};
+    if (!customer.contactId && contact?.id) patch.contactId = contact.id;
+    if (!customer.territory && lead.territory) patch.territory = lead.territory;
+    if (Object.keys(patch).length) customer = await tx.customer.update({ where: { id: customer.id }, data: patch });
     return customer;
   }
 
@@ -51,11 +65,26 @@ async function ensureCustomerForLead(tx: any, lead: any, contact: any) {
       contactId: contact?.id || null,
       city: lead.city || null,
       country: lead.country || null,
+      territory: lead.territory || null,
       notes: lead.notes || null,
       currency: 'USD',
     },
   });
 }
+
+// When a lead is converted, its extra phone numbers go to the contact and the organization, and the
+// organization takes the lead's territory if it has none.
+async function carryLeadData(tx: any, lead: any, contact: any, companyId?: string | null) {
+  const phones = phoneRowsOf(lead.phones);
+  if (contact?.id) await addMissingPhones(tx, { contactId: contact.id }, companyId, phones);
+  if (lead.organizationId) {
+    await addMissingPhones(tx, { organizationId: lead.organizationId }, companyId, phones);
+    if (lead.territory) await tx.crmOrganization.updateMany({ where: { id: lead.organizationId, territory: null }, data: { territory: lead.territory } });
+  }
+}
+
+const REQUEST_PROBLEMS = ['Invalid phone number', 'Invalid lead status', 'Unknown territory'];
+const isRequestProblem = (message?: string) => REQUEST_PROBLEMS.some((prefix) => message?.startsWith(prefix));
 
 export const getLeads = async (req: Request, res: Response) => {
   try {
@@ -63,7 +92,7 @@ export const getLeads = async (req: Request, res: Response) => {
     const limit = parseInt(req.query.limit as string) || 20;
     const { status, source, assignedToId, search, mine } = req.query as any;
     const where: any = await crmScopeWhere(req as AuthRequest, 'LEAD');
-    if (status) where.status = status;
+    if (status) where.status = normalizeLeadStatus(status) || status;
     if (source) where.source = source;
     if (assignedToId) where.assignedToId = assignedToId;
     if (mine === 'true' && (req as AuthRequest).user?.id) where.assignedToId = (req as AuthRequest).user!.id;
@@ -79,6 +108,7 @@ export const getLeads = async (req: Request, res: Response) => {
         where,
         include: {
           organization: true,
+          phones: { orderBy: [{ isPrimary: 'desc' }, { createdAt: 'asc' }] },
           createdBy: { select: { id: true, firstName: true, lastName: true, email: true } },
           assignedTo: { select: { id: true, firstName: true, lastName: true, email: true } },
           _count: { select: { activities: true } },
@@ -119,8 +149,9 @@ export const createLead = async (req: AuthRequest, res: Response) => {
     const lead = await prisma.$transaction(async (tx) => {
       const duplicate = await findDuplicateLead(tx, normalized);
       if (duplicate && !req.body.allowDuplicate) throw new Error(`Duplicate lead exists for ${duplicate.email || duplicate.phone}`);
-      const organization = await ensureOrganization(tx, normalized, req.user?.companyId, req.user!.id);
-      const assignedToId = req.body.assignedToId || await resolveLeadAssignee(tx, normalized, req.user?.companyId, req.user!.id);
+      const territory = await resolveTerritory(tx, req.user?.companyId, req.body.territory);
+      const organization = await ensureOrganization(tx, { ...normalized, territory }, req.user?.companyId, req.user!.id);
+      const assignedToId = req.body.assignedToId || await resolveLeadAssignee(tx, { ...normalized, territory }, req.user?.companyId, req.user!.id);
       const created = await tx.lead.create({
         data: {
           ...leadWriteData({ ...req.body, ...normalized }),
@@ -129,9 +160,11 @@ export const createLead = async (req: AuthRequest, res: Response) => {
           normalizedEmail: normalized.email,
           normalizedPhone: normalized.phone?.replace(/\D/g, '') || null,
           title: titleFromLead({ ...req.body, ...normalized }),
+          territory,
           organizationId: organization?.id,
           createdById: req.user!.id,
           assignedToId,
+          phones: { create: normalized.phoneList.map((phone) => ({ companyId: req.user?.companyId, number: phone.number, normalized: phone.normalized, type: phone.type, isPrimary: phone.isPrimary })) },
         } as any,
         include: leadInclude,
       });
@@ -146,36 +179,51 @@ export const createLead = async (req: AuthRequest, res: Response) => {
     return success(res, lead, 'Lead created', 201);
   } catch (err: any) {
     if (err.message?.startsWith('Duplicate lead')) return error(res, err.message, 409);
+    if (isRequestProblem(err.message)) return error(res, err.message, 400);
     return handlePrismaError(res, err);
   }
 };
 
 export const updateLead = async (req: AuthRequest, res: Response) => {
-  if (req.body.status === 'CONVERTED') return convertLead(req, res);
+  // Choosing "Converted" runs the conversion, but only once: an already converted lead is just edited.
+  if (normalizeLeadStatus(req.body.status) === 'CONVERTED') {
+    const current = await prisma.lead.findFirst({ where: { id: req.params.id, ...(await crmScopeWhere(req, 'LEAD')) }, select: { status: true } });
+    if (current && current.status !== 'CONVERTED') return convertLead(req, res);
+  }
   try {
     const lead = await prisma.$transaction(async (tx) => {
       const existing = await tx.lead.findFirst({ where: { id: req.params.id, ...(await crmScopeWhere(req, 'LEAD')) } });
       if (!existing) throw new Error('Lead not found');
-      const organization = req.body.company ? await ensureOrganization(tx, req.body, req.user?.companyId, req.user?.id) : null;
+      const status = normalizeLeadStatus(req.body.status);
+      if (status === null) throw new Error('Invalid lead status');
       const data: any = leadWriteData(req.body);
-      if (req.body.email !== undefined || req.body.phone !== undefined) {
+      if (req.body.status !== undefined) {
+        if (status === undefined) delete data.status;
+        else data.status = status;
+      }
+      if (req.body.territory !== undefined) data.territory = await resolveTerritory(tx, req.user?.companyId, req.body.territory);
+      const phonesChanged = req.body.phones !== undefined || req.body.phone !== undefined;
+      if (req.body.email !== undefined || phonesChanged) {
         const normalized = normalizeLeadRow({ ...existing, ...req.body });
+        if (normalized.phoneError) throw new Error(normalized.phoneError);
         data.email = normalized.email;
         data.phone = normalized.phone;
         data.normalizedEmail = normalized.email;
         data.normalizedPhone = normalized.phone?.replace(/\D/g, '') || null;
+        if (phonesChanged) await replacePhones(tx, { leadId: existing.id }, existing.companyId, normalized.phoneList);
       }
+      const organization = req.body.company ? await ensureOrganization(tx, { ...req.body, territory: data.territory ?? existing.territory }, req.user?.companyId, req.user?.id) : null;
       if (organization) data.organizationId = organization.id;
-      if (req.body.status === 'QUALIFIED' && existing.status !== 'QUALIFIED') data.qualifiedAt = new Date();
-      if (req.body.status === 'CONTACTED' && existing.status !== 'CONTACTED') data.lastContactedAt = new Date();
+      if (status === 'INTERESTED' && existing.status !== 'INTERESTED') data.qualifiedAt = new Date();
+      if ((status === 'OPEN' || status === 'REPLIED') && existing.status !== status) data.lastContactedAt = new Date();
       const updated = await tx.lead.update({ where: { id: req.params.id }, data, include: leadInclude });
-      if (req.body.status && req.body.status !== existing.status) {
+      if (status && status !== existing.status) {
         await logCrmActivity(tx, req.user!.id, {
           type: 'STATUS_CHANGE',
-          subject: `Lead status changed to ${req.body.status}`,
-          description: `${existing.status} → ${req.body.status}`,
+          subject: `Lead status changed to ${status}`,
+          description: `${existing.status} → ${status}`,
           leadId: updated.id,
-          metadata: { before: existing.status, after: req.body.status },
+          metadata: { before: existing.status, after: status },
         });
       }
       return updated;
@@ -183,6 +231,7 @@ export const updateLead = async (req: AuthRequest, res: Response) => {
     return success(res, lead, 'Lead updated');
   } catch (err: any) {
     if (err.message === 'Lead not found') return error(res, err.message, 404);
+    if (isRequestProblem(err.message)) return error(res, err.message, 400);
     return handlePrismaError(res, err);
   }
 };
@@ -201,11 +250,11 @@ export const convertLead = async (req: AuthRequest, res: Response) => {
   try {
     const body = req.body || {};
     const opportunity = await prisma.$transaction(async (tx) => {
-      const lead = await tx.lead.findFirst({ where: { id: req.params.id, ...(await crmScopeWhere(req, 'LEAD')) }, include: { contacts: true, opportunity: true } });
+      const lead = await tx.lead.findFirst({ where: { id: req.params.id, ...(await crmScopeWhere(req, 'LEAD')) }, include: { contacts: true, opportunity: true, phones: true } });
       if (!lead) throw new Error('Lead not found');
       if (lead.status === 'CONVERTED') throw new Error('Lead is already converted');
       if (lead.opportunity) throw new Error('Lead already has an opportunity; use Qualify to complete its conversion');
-      const contact = lead.contacts[0] || await tx.contact.create({
+      const contact = lead.contacts[0] || (await findExistingContact(tx, lead)) || await tx.contact.create({
         data: {
           leadId: lead.id,
           firstName: lead.firstName,
@@ -213,10 +262,12 @@ export const convertLead = async (req: AuthRequest, res: Response) => {
           email: lead.email,
           phone: lead.phone,
           company: lead.company,
+          jobTitle: lead.jobTitle,
           organizationId: lead.organizationId,
           notes: lead.notes,
         },
       });
+      await carryLeadData(tx, lead, contact, req.user?.companyId);
       const customer = await ensureCustomerForLead(tx, lead, contact);
       const created = await tx.opportunity.create({
         data: {
@@ -257,11 +308,11 @@ export const qualifyLead = async (req: AuthRequest, res: Response) => {
   try {
     const body = req.body || {};
     const opportunity = await prisma.$transaction(async (tx) => {
-      const lead = await tx.lead.findFirst({ where: { id: req.params.id, ...(await crmScopeWhere(req, 'LEAD')) }, include: { opportunity: true, contacts: true } });
+      const lead = await tx.lead.findFirst({ where: { id: req.params.id, ...(await crmScopeWhere(req, 'LEAD')) }, include: { opportunity: true, contacts: true, phones: true } });
       if (!lead) throw new Error('Lead not found');
       if (lead.opportunity) return tx.opportunity.findUnique({ where: { id: lead.opportunity.id }, include: { contact: true, lead: true, organization: true } });
 
-      const contact = lead.contacts[0] || await tx.contact.create({
+      const contact = lead.contacts[0] || (await findExistingContact(tx, lead)) || await tx.contact.create({
         data: {
           leadId: lead.id,
           firstName: lead.firstName,
@@ -269,12 +320,14 @@ export const qualifyLead = async (req: AuthRequest, res: Response) => {
           email: lead.email,
           phone: lead.phone,
           company: lead.company,
+          jobTitle: lead.jobTitle,
           city: lead.city,
           country: lead.country,
           organizationId: lead.organizationId,
           notes: lead.notes,
         },
       });
+      await carryLeadData(tx, lead, contact, req.user?.companyId);
       const customer = await ensureCustomerForLead(tx, lead, contact);
       const created = await tx.opportunity.create({
         data: {
@@ -349,7 +402,11 @@ export const previewLeadImport = async (req: AuthRequest, res: Response) => {
     const preview = [];
     for (const row of rows) {
       const normalized = normalizeLeadRow(row.raw);
-      const validation = validateLead(normalized);
+      let validation = validateLead(normalized);
+      if (!validation) {
+        try { await resolveTerritory(prisma, req.user?.companyId, normalized.territory); }
+        catch (err: any) { validation = err.message; }
+      }
       const duplicate = validation ? null : await findDuplicateLead(prisma, normalized);
       preview.push({ rowNo: row.rowNo, raw: row.raw, normalized, status: validation ? 'FAILED' : duplicate ? 'DUPLICATE' : 'READY', error: validation, duplicate });
     }
@@ -381,17 +438,27 @@ export const importLeads = async (req: AuthRequest, res: Response) => {
           await tx.leadImportRow.create({ data: { batchId: batch.id, rowNo: row.rowNo, rawData: row.raw, normalizedData: normalized, status: 'FAILED', error: validation } });
           continue;
         }
+        let territory: string | null = null;
+        try { territory = await resolveTerritory(tx, req.user?.companyId, normalized.territory); }
+        catch (err: any) {
+          counts.failedRows += 1;
+          await tx.leadImportRow.create({ data: { batchId: batch.id, rowNo: row.rowNo, rawData: row.raw, normalizedData: normalized, status: 'FAILED', error: err.message } });
+          continue;
+        }
         const duplicate = await findDuplicateLead(tx, normalized);
         if (duplicate && duplicateMode !== 'create') {
           counts.duplicateRows += 1;
           await tx.leadImportRow.create({ data: { batchId: batch.id, rowNo: row.rowNo, rawData: row.raw, normalizedData: normalized, status: 'DUPLICATE', duplicateLeadId: duplicate.id, error: 'Duplicate lead' } });
           continue;
         }
-        const organization = await ensureOrganization(tx, normalized, req.user?.companyId, req.user!.id);
-        const assignedToId = req.body.assignedToId || await resolveLeadAssignee(tx, normalized, req.user?.companyId, req.user!.id);
+        const { phoneList, phoneError: _phoneError, ...leadFields } = normalized;
+        const organization = await ensureOrganization(tx, { ...normalized, territory }, req.user?.companyId, req.user!.id);
+        const assignedToId = req.body.assignedToId || await resolveLeadAssignee(tx, { ...normalized, territory }, req.user?.companyId, req.user!.id);
         const lead = await tx.lead.create({
           data: {
-            ...normalized,
+            ...leadFields,
+            territory,
+            phones: { create: phoneList.map((phone) => ({ companyId: req.user?.companyId, number: phone.number, normalized: phone.normalized, type: phone.type, isPrimary: phone.isPrimary })) },
             companyId: req.user?.companyId,
             branchId: req.user?.branchId,
             normalizedEmail: normalized.email,
@@ -402,7 +469,7 @@ export const importLeads = async (req: AuthRequest, res: Response) => {
             assignedToId,
             importBatchId: batch.id,
             importRowNo: row.rowNo,
-          },
+          } as any,
         });
         counts.createdRows += 1;
         await tx.leadImportRow.create({ data: { batchId: batch.id, rowNo: row.rowNo, rawData: row.raw, normalizedData: normalized, status: 'CREATED', leadId: lead.id } });
